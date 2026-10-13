@@ -179,7 +179,6 @@ export const apiClient = {
     setStoredToken(null);
   },
 
-  // --- Tasks ---
   async getTasks(params?: {
     status?: TaskStatus;
     priority?: TaskPriority;
@@ -192,7 +191,12 @@ export const apiClient = {
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString() ? `?${q.toString()}` : "";
-    return request<Task[]>(`/tasks${qs}`, { method: "GET" });
+    const res = await request<Task[] | { items?: Task[]; total?: number }>(`/tasks${qs}`, { method: "GET" });
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray((res as { items?: Task[] }).items)) {
+      return (res as { items: Task[] }).items;
+    }
+    return [];
   },
 
   async getTask(id: string): Promise<Task> {
@@ -342,7 +346,12 @@ export const apiClient = {
 
   // --- Actions ---
   async getPendingActions(): Promise<ActionRecord[]> {
-    return request<ActionRecord[]>("/actions/pending", { method: "GET" });
+    const res = await request<ActionRecord[] | { items?: ActionRecord[] }>("/actions/pending", { method: "GET" });
+    if (Array.isArray(res)) return res;
+    if (res && Array.isArray((res as { items?: ActionRecord[] }).items)) {
+      return (res as { items: ActionRecord[] }).items;
+    }
+    return [];
   },
 
   async getActionHistory(

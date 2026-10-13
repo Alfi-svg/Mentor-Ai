@@ -44,10 +44,12 @@ export default function DashboardPage() {
       ]);
 
       if (tasksRes.status === "fulfilled") {
-        setTasks(tasksRes.value);
+        const val = tasksRes.value;
+        setTasks(Array.isArray(val) ? val : (val as unknown as { items?: Task[] })?.items || []);
       }
       if (actionsRes.status === "fulfilled") {
-        setPendingActions(actionsRes.value);
+        const val = actionsRes.value;
+        setPendingActions(Array.isArray(val) ? val : (val as unknown as { items?: ActionRecord[] })?.items || []);
       }
       if (calRes.status === "fulfilled") {
         setCalendarStatus(calRes.value);
@@ -66,12 +68,14 @@ export default function DashboardPage() {
     loadDashboardData();
   }, [loadDashboardData]);
 
-  const pendingTasks = tasks.filter((t) => t.status === "pending" || t.status === "in_progress");
-  const completedTasks = tasks.filter((t) => t.status === "completed");
+  const safeTasks = Array.isArray(tasks) ? tasks : [];
+  const pendingTasks = safeTasks.filter((t) => t.status === "pending" || t.status === "in_progress");
+  const completedTasks = safeTasks.filter((t) => t.status === "completed");
 
-  const nextCommitment = todaySchedule?.blocks
-    ?.filter((b) => b.block_type === "fixed_commitment" || b.block_type === "task_allocation")
-    ?.sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())[0];
+  const scheduleBlocks = Array.isArray(todaySchedule?.blocks) ? todaySchedule.blocks : [];
+  const nextCommitment = scheduleBlocks
+    .filter((b) => b.block_type === "fixed_commitment" || b.block_type === "task_allocation")
+    .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())[0];
 
   return (
     <AppShell>
@@ -259,9 +263,9 @@ export default function DashboardPage() {
 
             {loading ? (
               <div className="py-8 text-center text-xs text-zinc-500">Loading timeline...</div>
-            ) : todaySchedule && todaySchedule.blocks.length > 0 ? (
+            ) : scheduleBlocks.length > 0 ? (
               <div className="space-y-2">
-                {todaySchedule.blocks.slice(0, 5).map((block) => (
+                {scheduleBlocks.slice(0, 5).map((block) => (
                   <div
                     key={block.id}
                     className="flex items-center justify-between rounded-lg border border-zinc-800/60 bg-zinc-800/30 p-2.5 text-xs"
