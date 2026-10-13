@@ -8,7 +8,6 @@ Usage:
 import argparse
 import sys
 import uuid
-from typing import Any
 import httpx
 
 PASS_BADGE = "\033[92m[PASS]\033[0m"
@@ -59,7 +58,7 @@ class ProductionVerifier:
 
     def run_all_checks(self) -> bool:
         print("=" * 80)
-        print(f" MENTOR AI PRODUCTION VERIFICATION SUITE")
+        print(" MENTOR AI PRODUCTION VERIFICATION SUITE")
         print(f" Target Backend:  {self.api_url}")
         print(f" Target Frontend: {self.frontend_url or 'Not specified (skipping bundle scan)'}")
         print("=" * 80)

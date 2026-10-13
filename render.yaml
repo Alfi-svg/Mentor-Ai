@@ -29,7 +29,7 @@ services:
       - key: HOST
         value: 0.0.0.0
       - key: ALLOWED_ORIGINS
-        value: https://frontend-alfi-s-projects.vercel.app,https://frontend-csllw3jnt-alfi-s-projects.vercel.app,http://localhost:3000
+        value: https://frontend-ten-delta-a5irgspmf7.vercel.app,https://frontend-alfi-s-projects.vercel.app,https://frontend-5iphaelf5-alfi-s-projects.vercel.app,http://localhost:3000
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL

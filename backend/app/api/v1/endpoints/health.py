@@ -59,7 +59,7 @@ async def get_readiness() -> ReadinessResponse:
     if not settings.has_database_url:
         db_details = f"Local/test fallback database ({db_info})"
     else:
-        db_details = f"Supabase PostgreSQL ({db_info})"
+        db_details = f"PostgreSQL ({db_info})"
 
     ai_status = f"active_{settings.AI_PROVIDER}"
     overall_status = "ready" if connected else "degraded"
