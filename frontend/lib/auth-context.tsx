@@ -82,9 +82,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const res = await apiClient.login(email, pass);
-      setUser(res.user);
+      const userObj: User = res.user || {
+        id: (res as any).user_id || "",
+        email: (res as any).email || email,
+      };
+      setUser(userObj);
       setToken(res.access_token);
       setSessionExpired(false);
+      // Opportunistically fetch full profile with preferences in background
+      apiClient.getMe().then((p) => {
+        if (p) setUser(p);
+      }).catch(() => {});
       router.push("/dashboard");
     } finally {
       setIsLoading(false);
@@ -95,9 +103,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       const res = await apiClient.signup(email, pass);
-      setUser(res.user);
+      const userObj: User = res.user || {
+        id: (res as any).user_id || "",
+        email: (res as any).email || email,
+      };
+      setUser(userObj);
       setToken(res.access_token);
       setSessionExpired(false);
+      // Opportunistically fetch full profile with preferences in background
+      apiClient.getMe().then((p) => {
+        if (p) setUser(p);
+      }).catch(() => {});
       router.push("/dashboard");
     } finally {
       setIsLoading(false);

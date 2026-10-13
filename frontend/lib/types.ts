@@ -17,6 +17,7 @@ export interface Task {
   title: string;
   description: string | null;
   estimated_duration_minutes: number;
+  duration_minutes?: number;
   priority: TaskPriority;
   deadline: string | null;
   energy_level: "low" | "medium" | "high" | null;
@@ -31,7 +32,8 @@ export interface Task {
 export interface TaskCreatePayload {
   title: string;
   description?: string | null;
-  estimated_duration_minutes: number;
+  estimated_duration_minutes?: number;
+  duration_minutes?: number;
   priority?: TaskPriority;
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
@@ -42,6 +44,7 @@ export interface TaskUpdatePayload {
   title?: string;
   description?: string | null;
   estimated_duration_minutes?: number;
+  duration_minutes?: number;
   priority?: TaskPriority;
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;

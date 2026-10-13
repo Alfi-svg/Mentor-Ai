@@ -22,6 +22,31 @@ import {
   ActionRecord,
 } from "@/lib/types";
 
+function safeFormatTime(isoString: string | null | undefined): string {
+  if (!isoString) return "--:--";
+  try {
+    const d = new Date(isoString);
+    return isNaN(d.getTime()) ? "--:--" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "--:--";
+  }
+}
+
+function safeFormatDate(isoString: string | null | undefined): string {
+  if (!isoString) return "";
+  try {
+    const d = new Date(isoString);
+    return isNaN(d.getTime()) ? "" : d.toLocaleDateString();
+  } catch {
+    return "";
+  }
+}
+
+function safeBlockType(blockType: string | null | undefined): string {
+  if (!blockType) return "task";
+  return blockType.replace(/_/g, " ");
+}
+
 export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [pendingActions, setPendingActions] = useState<ActionRecord[]>([]);
@@ -29,8 +54,13 @@ export default function DashboardPage() {
   const [todaySchedule, setTodaySchedule] = useState<SavedSchedule | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState<boolean>(false);
 
   const todayStr = new Date().toISOString().split("T")[0];
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const loadDashboardData = useCallback(async () => {
     setLoading(true);
@@ -74,8 +104,12 @@ export default function DashboardPage() {
 
   const scheduleBlocks = Array.isArray(todaySchedule?.blocks) ? todaySchedule.blocks : [];
   const nextCommitment = scheduleBlocks
-    .filter((b) => b.block_type === "fixed_commitment" || b.block_type === "task_allocation")
-    .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())[0];
+    .filter((b) => b && (b.block_type === "fixed_commitment" || b.block_type === "task_allocation"))
+    .sort((a, b) => {
+      const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
+      const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
+      return ta - tb;
+    })[0];
 
   return (
     <AppShell>
@@ -86,15 +120,15 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
               Workspace Overview
             </h1>
-            <p className="text-xs text-zinc-400">
-              Today is{" "}
-              {new Date().toLocaleDateString(undefined, {
-                weekday: "long",
-                month: "short",
-                day: "numeric",
-                year: "numeric",
-              })}
-              . Deterministic engine active.
+            <p className="text-xs text-zinc-400" suppressHydrationWarning>
+              {mounted
+                ? `Today is ${new Date().toLocaleDateString(undefined, {
+                    weekday: "long",
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}. Deterministic engine active.`
+                : "Today's Productivity Workspace. Deterministic engine active."}
             </p>
           </div>
           <button
@@ -273,15 +307,7 @@ export default function DashboardPage() {
                     <div className="space-y-0.5">
                       <p className="font-medium text-white">{block.title}</p>
                       <p className="text-[11px] text-zinc-400 font-mono">
-                        {new Date(block.start_time).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}{" "}
-                        -{" "}
-                        {new Date(block.end_time).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
+                        {safeFormatTime(block.start_time)} - {safeFormatTime(block.end_time)}
                       </p>
                     </div>
                     <span
@@ -293,7 +319,7 @@ export default function DashboardPage() {
                           : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
                       }`}
                     >
-                      {block.block_type.replace("_", " ")}
+                      {safeBlockType(block.block_type)}
                     </span>
                   </div>
                 ))}
@@ -339,9 +365,9 @@ export default function DashboardPage() {
                     <div className="space-y-0.5">
                       <p className="font-medium text-white">{task.title}</p>
                       <p className="text-[11px] text-zinc-400">
-                        {task.estimated_duration_minutes} mins
+                        {task.estimated_duration_minutes ?? task.duration_minutes ?? 45} mins
                         {task.deadline
-                          ? ` • Due: ${new Date(task.deadline).toLocaleDateString()}`
+                          ? ` • Due: ${safeFormatDate(task.deadline)}`
                           : ""}
                       </p>
                     </div>
@@ -354,7 +380,7 @@ export default function DashboardPage() {
                           : "bg-zinc-800 text-zinc-400"
                       }`}
                     >
-                      {task.priority}
+                      {task.priority || "P3"}
                     </span>
                   </div>
                 ))}

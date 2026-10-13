@@ -148,27 +148,81 @@ async function request<T>(
 }
 
 // -----------------------------------------------------------------------------
+// Data Normalization Helpers
+// -----------------------------------------------------------------------------
+
+function normalizeTask(raw: any): Task {
+  if (!raw) return raw;
+  const duration =
+    typeof raw.duration_minutes === "number"
+      ? raw.duration_minutes
+      : typeof raw.estimated_duration_minutes === "number"
+      ? raw.estimated_duration_minutes
+      : 45;
+
+  return {
+    ...raw,
+    duration_minutes: duration,
+    estimated_duration_minutes: duration,
+    priority: raw.priority || "P3",
+    status: raw.status || "pending",
+  };
+}
+
+// -----------------------------------------------------------------------------
 // API Client Domain Methods
 // -----------------------------------------------------------------------------
 
 export const apiClient = {
   // --- Auth ---
   async signup(email: string, password: string): Promise<AuthResponse> {
-    const data = await request<AuthResponse>("/auth/signup", {
+    const data = await request<{
+      access_token: string;
+      token_type?: string;
+      expires_in?: number;
+      refresh_token?: string | null;
+      user_id?: string;
+      email?: string;
+      user?: User;
+    }>("/auth/signup", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
     setStoredToken(data.access_token);
-    return data;
+    const user: User = data.user || {
+      id: data.user_id || "",
+      email: data.email || email,
+    };
+    return {
+      access_token: data.access_token,
+      token_type: data.token_type || "bearer",
+      user,
+    };
   },
 
   async login(email: string, password: string): Promise<AuthResponse> {
-    const data = await request<AuthResponse>("/auth/login", {
+    const data = await request<{
+      access_token: string;
+      token_type?: string;
+      expires_in?: number;
+      refresh_token?: string | null;
+      user_id?: string;
+      email?: string;
+      user?: User;
+    }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
     setStoredToken(data.access_token);
-    return data;
+    const user: User = data.user || {
+      id: data.user_id || "",
+      email: data.email || email,
+    };
+    return {
+      access_token: data.access_token,
+      token_type: data.token_type || "bearer",
+      user,
+    };
   },
 
   async getMe(): Promise<User> {
@@ -192,29 +246,42 @@ export const apiClient = {
     if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString() ? `?${q.toString()}` : "";
     const res = await request<Task[] | { items?: Task[]; total?: number }>(`/tasks${qs}`, { method: "GET" });
-    if (Array.isArray(res)) return res;
+    if (Array.isArray(res)) return res.map(normalizeTask);
     if (res && Array.isArray((res as { items?: Task[] }).items)) {
-      return (res as { items: Task[] }).items;
+      return (res as { items: Task[] }).items.map(normalizeTask);
     }
     return [];
   },
 
   async getTask(id: string): Promise<Task> {
-    return request<Task>(`/tasks/${id}`, { method: "GET" });
+    const res = await request<Task>(`/tasks/${id}`, { method: "GET" });
+    return normalizeTask(res);
   },
 
   async createTask(payload: TaskCreatePayload): Promise<Task> {
-    return request<Task>("/tasks", {
+    const duration = payload.duration_minutes ?? payload.estimated_duration_minutes ?? 45;
+    const backendPayload = {
+      ...payload,
+      duration_minutes: duration,
+    };
+    const res = await request<Task>("/tasks", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(backendPayload),
     });
+    return normalizeTask(res);
   },
 
   async updateTask(id: string, payload: TaskUpdatePayload): Promise<Task> {
-    return request<Task>(`/tasks/${id}`, {
+    const duration = payload.duration_minutes ?? payload.estimated_duration_minutes;
+    const backendPayload = {
+      ...payload,
+      ...(duration !== undefined ? { duration_minutes: duration } : {}),
+    };
+    const res = await request<Task>(`/tasks/${id}`, {
       method: "PATCH",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(backendPayload),
     });
+    return normalizeTask(res);
   },
 
   async deleteTask(id: string): Promise<void> {
@@ -222,11 +289,13 @@ export const apiClient = {
   },
 
   async completeTask(id: string): Promise<Task> {
-    return request<Task>(`/tasks/${id}/complete`, { method: "POST" });
+    const res = await request<Task>(`/tasks/${id}/complete`, { method: "POST" });
+    return normalizeTask(res);
   },
 
   async reopenTask(id: string): Promise<Task> {
-    return request<Task>(`/tasks/${id}/reopen`, { method: "POST" });
+    const res = await request<Task>(`/tasks/${id}/reopen`, { method: "POST" });
+    return normalizeTask(res);
   },
 
   // --- Planner & Natural Language ---

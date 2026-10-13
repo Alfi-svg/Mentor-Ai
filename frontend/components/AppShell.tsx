@@ -150,7 +150,7 @@ export function AppShell({ children }: AppShellProps) {
                 <UserIcon className="h-3.5 w-3.5" />
               </div>
               <div className="truncate text-xs">
-                <p className="truncate font-medium text-zinc-200">{user?.email}</p>
+                <p className="truncate font-medium text-zinc-200">{user?.email || "Authenticated User"}</p>
                 <p className="text-[10px] text-zinc-400">Authenticated Session</p>
               </div>
             </div>

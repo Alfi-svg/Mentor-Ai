@@ -8,7 +8,8 @@ export function HealthStatusBadge() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isWakingUp, setIsWakingUp] = useState<boolean>(false);
-  const [lastChecked, setLastChecked] = useState<Date>(new Date());
+  const [lastChecked, setLastChecked] = useState<Date | null>(null);
+  const [mounted, setMounted] = useState<boolean>(false);
 
   const checkStatus = async () => {
     setLoading(true);
@@ -26,6 +27,7 @@ export function HealthStatusBadge() {
   };
 
   useEffect(() => {
+    setMounted(true);
     checkStatus();
     // Poll every 30 seconds
     const interval = setInterval(checkStatus, 30000);
@@ -67,7 +69,7 @@ export function HealthStatusBadge() {
       <button
         onClick={checkStatus}
         className="ml-auto inline-flex items-center gap-1 text-[11px] text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200"
-        title={`Last checked: ${lastChecked.toLocaleTimeString()}`}
+        title={mounted && lastChecked ? `Last checked: ${lastChecked.toLocaleTimeString()}` : "Check backend status"}
       >
         <RefreshCw className="h-3 w-3" />
         <span>Check</span>
