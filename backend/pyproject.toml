@@ -1,0 +1,61 @@
+[project]
+name = "mentor-ai-api"
+version = "0.1.0"
+description = "Mentor AI — FastAPI Personal Scheduling and Task Orchestration Backend"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Mentor AI Engineering Team" }
+]
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
+    "pydantic>=2.8.0,<3.0.0",
+    "pydantic-settings>=2.4.0,<3.0.0",
+    "python-dotenv>=1.0.1,<2.0.0",
+    "httpx>=0.27.0,<1.0.0",
+    "structlog>=24.4.0,<25.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0,<9.0.0",
+    "pytest-asyncio>=0.24.0,<1.0.0",
+    "ruff>=0.6.0,<1.0.0",
+    "mypy>=1.11.0,<2.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = ["E501", "B008"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["../tests/backend"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+mypy_path = ["app", "backend", "."]
+exclude = ["alembic/"]

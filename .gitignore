@@ -1,0 +1,80 @@
+# ==============================================================================
+# Mentor AI — Git Ignore Configuration
+# ==============================================================================
+
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Node.js & Next.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+out/
+build/
+dist/
+.vercel
+
+# Python & Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local Databases & State
+*.sqlite
+*.sqlite3
+*.db
+local_data/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+!.env.production.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.production.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/.env.production.example
+*.pem
+*.key
+*.cert
+credentials.json
+token.json
+
+# IDE & Editor Configs
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# MCP & Temporary Logs
+*.log
+mcp-debug.log
+logs/
+scratch/

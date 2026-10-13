@@ -1,0 +1,56 @@
+# ==============================================================================
+# Mentor AI — Render Blueprint Deployment Specification (render.yaml)
+# Free-Tier Compatible Architecture: Python 3.12+ FastAPI Web Service
+# ==============================================================================
+services:
+  - type: web
+    name: mentor-ai-api
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    autoDeploy: true
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: HOST
+        value: 0.0.0.0
+      - key: ALLOWED_ORIGINS
+        value: https://mentor-ai.vercel.app,https://mentor-ai-web.vercel.app,http://localhost:3000
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.0-flash
+      - key: AI_ALLOW_OFFLINE_FALLBACK
+        value: "true"
+      - key: AI_MAX_RETRIES
+        value: "2"
+      - key: AI_REQUEST_TIMEOUT_SECONDS
+        value: "12.0"
+      - key: CALENDAR_PROVIDER
+        value: google_calendar
+      - key: CALENDAR_ENCRYPTION_KEY
+        generateValue: true
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        value: https://mentor-ai-api.onrender.com/api/v1/calendar/callback
