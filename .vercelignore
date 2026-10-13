@@ -1,0 +1,15 @@
+# Vercel Ignore for Root Monorepo
+backend/
+infra/
+tests/
+docs/
+.git/
+.venv/
+venv/
+*.db
+*.sqlite
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+frontend/node_modules/
+frontend/.next/

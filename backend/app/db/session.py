@@ -21,10 +21,15 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def get_database_url() -> str:
-    """Return the active database URL, with safe test fallback."""
+    """Return the active database URL, with safe test fallback and asyncpg normalization."""
     if settings.has_database_url:
-        return settings.DATABASE_URL
-    # Local fallback for tests and development without Supabase
+        url = settings.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+            url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return url
+    # Local fallback for tests and development without external DB
     return settings.TEST_DATABASE_URL
 
 

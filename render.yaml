@@ -1,7 +1,15 @@
 # ==============================================================================
 # Mentor AI — Render Blueprint Deployment Specification (render.yaml)
-# Free-Tier Compatible Architecture: Python 3.12+ FastAPI Web Service
+# Free-Tier Architecture: FastAPI Web Service + Render PostgreSQL Database
 # ==============================================================================
+
+databases:
+  - name: mentor-ai-db
+    databaseName: mentor_ai
+    user: mentor
+    plan: free
+    region: oregon
+
 services:
   - type: web
     name: mentor-ai-api
@@ -10,7 +18,7 @@ services:
     region: oregon
     rootDir: backend
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/v1/health
     autoDeploy: true
     envVars:
@@ -21,11 +29,13 @@ services:
       - key: HOST
         value: 0.0.0.0
       - key: ALLOWED_ORIGINS
-        value: https://mentor-ai.vercel.app,https://mentor-ai-web.vercel.app,http://localhost:3000
+        value: https://frontend-alfi-s-projects.vercel.app,https://frontend-csllw3jnt-alfi-s-projects.vercel.app,http://localhost:3000
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: mentor-ai-db
+          property: connectionString
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
