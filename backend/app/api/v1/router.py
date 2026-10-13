@@ -2,7 +2,17 @@
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import actions, auth, calendar, chat, health, planner, schedule, tasks
+from app.api.v1.endpoints import (
+    actions,
+    auth,
+    calendar,
+    chat,
+    health,
+    notifications,
+    planner,
+    schedule,
+    tasks,
+)
 
 api_router = APIRouter()
 
@@ -22,3 +32,5 @@ api_router.include_router(chat.router)
 api_router.include_router(actions.router)
 # Include calendar integration routes
 api_router.include_router(calendar.router)
+# Include task deadline notifications routes
+api_router.include_router(notifications.router)

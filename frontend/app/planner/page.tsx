@@ -106,6 +106,9 @@ export default function PlannerPage() {
     updated[index] = {
       ...updated[index],
       [field]: value,
+      ...(field === "estimated_duration_minutes"
+        ? { duration_minutes: Number(value) || 0 }
+        : {}),
     };
     setEditableTasks(updated);
   };
@@ -115,12 +118,18 @@ export default function PlannerPage() {
     setEditableTasks(updated);
   };
 
+  const isClarificationResolved =
+    editableTasks.length > 0 &&
+    editableTasks.every(
+      (t) => (t.duration_minutes || t.estimated_duration_minutes || 0) > 0
+    );
+
   const handleConfirmPlan = async () => {
     if (!proposal) return;
 
     // Validate that all tasks have positive duration
     const invalidTask = editableTasks.find(
-      (t) => !t.estimated_duration_minutes || t.estimated_duration_minutes <= 0
+      (t) => (t.duration_minutes || t.estimated_duration_minutes || 0) <= 0
     );
     if (invalidTask) {
       setError(`Task "${invalidTask.title}" must have an estimated duration greater than 0.`);
@@ -131,10 +140,20 @@ export default function PlannerPage() {
     setError(null);
 
     try {
+      const normalizedTasks = editableTasks.map((t) => ({
+        ...t,
+        duration_minutes: t.duration_minutes || t.estimated_duration_minutes || 60,
+        energy_level: t.energy_level || "medium",
+        deadline:
+          t.deadline && typeof t.deadline === "string" && t.deadline.trim() !== ""
+            ? t.deadline
+            : null,
+      }));
+
       const result = await apiClient.confirmPlan({
         proposal_id: proposal.proposal_id,
         target_date: proposal.target_date,
-        tasks: editableTasks,
+        tasks: normalizedTasks,
         fixed_events: proposal.fixed_events,
         persist_tasks: true,
         generate_schedule: true,
@@ -359,20 +378,43 @@ export default function PlannerPage() {
 
             {/* Missing Information / Clarification Alert */}
             {proposal.clarification_question && (
-              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 space-y-2">
-                <div className="flex items-center gap-2 text-amber-300">
-                  <HelpCircle className="h-4 w-4" />
-                  <span className="text-xs font-bold uppercase tracking-wider">
-                    Clarification Needed
-                  </span>
+              <div
+                className={`rounded-xl border p-4 space-y-2 ${
+                  isClarificationResolved
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                    : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {isClarificationResolved ? (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-emerald-300">
+                        Clarification Resolved
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <HelpCircle className="h-4 w-4 text-amber-400" />
+                      <span className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                        Clarification Needed
+                      </span>
+                    </>
+                  )}
                 </div>
-                <p className="text-xs text-amber-200">
+                <p className="text-xs">
                   {proposal.clarification_question}
                 </p>
-                {proposal.missing_information.length > 0 && (
-                  <p className="text-[11px] text-amber-400 font-mono">
-                    Missing parameters: {proposal.missing_information.join(", ")}
+                {isClarificationResolved ? (
+                  <p className="text-[11px] text-emerald-400 font-medium">
+                    ✓ All task durations are now set. You can review and confirm your schedule below.
                   </p>
+                ) : (
+                  proposal.missing_information.length > 0 && (
+                    <p className="text-[11px] text-amber-400 font-mono">
+                      Missing parameters: {proposal.missing_information.join(", ")}
+                    </p>
+                  )
                 )}
               </div>
             )}
@@ -528,10 +570,15 @@ export default function PlannerPage() {
                   <p>
                     Working hours: {proposal.preview_schedule.working_hours.start_time} -{" "}
                     {proposal.preview_schedule.working_hours.end_time} • Scheduled task time:{" "}
-                    {proposal.preview_schedule.summary.total_scheduled_task_minutes} mins •
+                    {proposal.preview_schedule.summary?.total_scheduled_task_minutes ?? 0} mins •
                     Utilization:{" "}
-                    {proposal.preview_schedule.summary.utilization_percentage.toFixed(1)}%
+                    {(proposal.preview_schedule.summary?.utilization_percentage ?? 0).toFixed(1)}%
                   </p>
+                  {proposal.preview_schedule.scheduling_explanation && (
+                    <p className="text-brand-300 font-medium">
+                      💡 {proposal.preview_schedule.scheduling_explanation}
+                    </p>
+                  )}
                   {proposal.preview_schedule.unscheduled_tasks.length > 0 && (
                     <p className="text-amber-400 font-medium">
                       ⚠️ {proposal.preview_schedule.unscheduled_tasks.length} task(s) could

@@ -12,6 +12,7 @@ import {
   CalendarStatus,
   CalendarSyncResult,
   ConflictCheckResult,
+  NotificationItem,
   PlanConfirmPayload,
   PlanConfirmResponse,
   PlanProposalResponse,
@@ -315,9 +316,18 @@ export const apiClient = {
   },
 
   async confirmPlan(payload: PlanConfirmPayload): Promise<PlanConfirmResponse> {
+    const normalizedTasks = (payload.tasks || []).map((t) => ({
+      ...t,
+      duration_minutes: t.duration_minutes || t.estimated_duration_minutes || 60,
+      energy_level: t.energy_level || "medium",
+      deadline: t.deadline && typeof t.deadline === "string" && t.deadline.trim() !== "" ? t.deadline : null,
+    }));
     return request<PlanConfirmResponse>("/planner/confirm", {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        tasks: normalizedTasks,
+      }),
     });
   },
 
@@ -450,6 +460,37 @@ export const apiClient = {
   async verifyAction(id: string): Promise<ActionVerifyResponse> {
     return request<ActionVerifyResponse>(`/actions/${id}/verify`, {
       method: "GET",
+    });
+  },
+
+  // --- Notifications ---
+  async getNotifications(unreadOnly = false): Promise<NotificationItem[]> {
+    return request<NotificationItem[]>(`/notifications?unread_only=${unreadOnly}`);
+  },
+
+  async getUnreadNotificationCount(): Promise<{ unread_count: number }> {
+    return request<{ unread_count: number }>("/notifications/unread-count");
+  },
+
+  async markNotificationRead(id: string): Promise<NotificationItem> {
+    return request<NotificationItem>(`/notifications/${id}/read`, {
+      method: "POST",
+    });
+  },
+
+  async markAllNotificationsRead(): Promise<{ marked_as_read: number }> {
+    return request<{ marked_as_read: number }>("/notifications/read-all", {
+      method: "POST",
+    });
+  },
+
+  async evaluateNotifications(): Promise<{
+    evaluated_tasks_count: number;
+    new_notifications_count: number;
+    notifications: NotificationItem[];
+  }> {
+    return request("/notifications/evaluate", {
+      method: "POST",
     });
   },
 };

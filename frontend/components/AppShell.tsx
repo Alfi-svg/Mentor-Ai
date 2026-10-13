@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { HealthStatusBadge } from "./HealthStatusBadge";
+import { NotificationBell } from "./NotificationBell";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -193,6 +194,7 @@ export function AppShell({ children }: AppShellProps) {
               <Sparkles className="h-3.5 w-3.5" />
               <span>Ask Mentor</span>
             </Link>
+            <NotificationBell />
             <HealthStatusBadge />
           </div>
         </header>

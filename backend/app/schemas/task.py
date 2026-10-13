@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 TaskStatus = Literal["pending", "in_progress", "completed", "cancelled"]
 TaskPriority = Literal["P1", "P2", "P3", "P4"]
@@ -90,6 +90,52 @@ class TaskCreateRequest(BaseModel):
         default="pending",
         description="Initial status",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def pre_validate_and_normalize(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # 1. Map duration aliases
+            if data.get("duration_minutes") is None:
+                est = data.get("estimated_duration_minutes")
+                if est is not None:
+                    data["duration_minutes"] = est
+                else:
+                    data["duration_minutes"] = 45
+
+            # 2. Handle empty or null deadline
+            dl = data.get("deadline")
+            if dl == "" or dl is None:
+                data["deadline"] = None
+
+            # 3. Handle energy_level null or default
+            el = data.get("energy_level")
+            if not el:
+                data["energy_level"] = "medium"
+            elif isinstance(el, str):
+                el_lower = el.lower().strip()
+                if el_lower in ("high", "medium", "low"):
+                    data["energy_level"] = el_lower
+                else:
+                    data["energy_level"] = "medium"
+
+            # 4. Handle priority normalization
+            p = data.get("priority")
+            if not p:
+                data["priority"] = "P3"
+            elif isinstance(p, str):
+                p_upper = p.upper().strip()
+                if p_upper in ("P1", "P2", "P3", "P4"):
+                    data["priority"] = p_upper
+                elif p_upper in ("HIGH", "URGENT"):
+                    data["priority"] = "P1"
+                elif p_upper in ("MEDIUM", "NORMAL"):
+                    data["priority"] = "P2"
+                elif p_upper in ("LOW",):
+                    data["priority"] = "P3"
+                else:
+                    data["priority"] = "P3"
+        return data
 
     @field_validator("title", mode="after")
     @classmethod

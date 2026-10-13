@@ -176,7 +176,8 @@ export interface ScheduleProposal {
   scheduled_blocks: ScheduleBlockProposal[];
   unscheduled_tasks: UnscheduledTask[];
   conflicts: ScheduleConflict[];
-  summary: ScheduleSummary;
+  summary?: ScheduleSummary;
+  scheduling_explanation?: string;
   status: "feasible" | "conflict_detected" | "partial";
   validation_passed: boolean;
 }
@@ -318,4 +319,22 @@ export interface ApiErrorEnvelope {
   validation_errors?: ValidationErrorItem[];
   trace_id?: string;
   timestamp?: string;
+}
+
+// -----------------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------------
+
+export interface NotificationItem {
+  id: string;
+  user_id: string;
+  task_id: string | null;
+  notification_type: "due_soon" | "due_now" | "overdue";
+  title: string;
+  message: string;
+  scheduled_for: string;
+  delivered_at: string | null;
+  read_at: string | null;
+  is_read: boolean;
+  created_at: string;
 }

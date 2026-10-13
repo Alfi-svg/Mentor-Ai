@@ -9,6 +9,7 @@ from app.services.scheduler.models import (
     SchedulableTask,
     ScheduleBlockProposal,
     ScheduleProposal,
+    ScheduleSummary,
     TimeInterval,
     UnscheduledTaskInfo,
 )
@@ -296,10 +297,22 @@ class DeterministicSchedulerEngine:
             tasks_by_id=tasks_by_id,
         )
 
+        total_working_mins = self.working_interval.duration_minutes
+        task_minutes = sum(b.duration_minutes for b in all_blocks if b.block_type == "task")
+        fixed_minutes = sum(b.duration_minutes for b in all_blocks if b.block_type == "fixed_event")
+        remaining_free_minutes = sum(int((s[1] - s[0]).total_seconds() / 60) for s in mutable_free)
         total_scheduled = sum(
             b.duration_minutes for b in all_blocks if b.block_type in {"task", "fixed_event"}
         )
-        remaining_free_minutes = sum(int((s[1] - s[0]).total_seconds() / 60) for s in mutable_free)
+        utilization = round((task_minutes / total_working_mins * 100), 1) if total_working_mins > 0 else 0.0
+
+        summary = ScheduleSummary(
+            total_working_minutes=total_working_mins,
+            total_scheduled_task_minutes=task_minutes,
+            total_fixed_minutes=fixed_minutes,
+            total_free_minutes=remaining_free_minutes,
+            utilization_percentage=utilization,
+        )
 
         conflicts: list[str] = [u.reason for u in unscheduled_tasks]
         if not validation.is_valid:
@@ -311,6 +324,12 @@ class DeterministicSchedulerEngine:
             else "conflict_detected"
         )
 
+        explanation = self._generate_explanation(
+            scheduled_tasks=scheduled_task_blocks,
+            unscheduled_tasks=unscheduled_tasks,
+            tasks_by_id=tasks_by_id,
+        )
+
         return ScheduleProposal(
             schedule_id=schedule_id,
             target_date=self.target_date,
@@ -318,11 +337,74 @@ class DeterministicSchedulerEngine:
             status=status_result,
             total_scheduled_minutes=total_scheduled,
             total_free_minutes=remaining_free_minutes,
+            summary=summary,
+            scheduling_explanation=explanation,
             blocks=all_blocks,
+            scheduled_blocks=all_blocks,
             conflicts=conflicts,
             unscheduled_tasks=unscheduled_tasks,
             validation=validation,
         )
+
+    def _generate_explanation(
+        self,
+        scheduled_tasks: list[ScheduleBlockProposal],
+        unscheduled_tasks: list[UnscheduledTaskInfo],
+        tasks_by_id: dict[uuid.UUID, SchedulableTask],
+    ) -> str:
+        """Formulate a transparent, human-readable explanation of the scheduling decisions."""
+        if not scheduled_tasks and not unscheduled_tasks:
+            return "No tasks to schedule for this date."
+
+        explanations: list[str] = []
+
+        ordered_tasks = [b for b in scheduled_tasks if b.block_type == "task" and b.task_id]
+        if len(ordered_tasks) >= 2:
+            first_b = ordered_tasks[0]
+            second_b = ordered_tasks[1]
+            t1 = tasks_by_id.get(first_b.task_id) if first_b.task_id else None
+            t2 = tasks_by_id.get(second_b.task_id) if second_b.task_id else None
+            if t1 and t2 and t1.deadline and t2.deadline:
+                t1_d = t1.deadline.strftime("%I:%M %p").lstrip("0")
+                t2_d = t2.deadline.strftime("%I:%M %p").lstrip("0")
+                if t1.deadline < t2.deadline:
+                    explanations.append(
+                        f"'{t1.title}' has the earlier deadline at {t1_d}, so I recommend completing it before '{t2.title}', which is due at {t2_d}."
+                    )
+                elif t1.deadline == t2.deadline:
+                    explanations.append(
+                        f"Both '{t1.title}' and '{t2.title}' have the same deadline at {t1_d}. '{t1.title}' was scheduled first based on higher priority ({t1.priority} vs {t2.priority})."
+                    )
+            elif t1 and t2 and t1.deadline and not t2.deadline:
+                t1_d = t1.deadline.strftime("%I:%M %p").lstrip("0")
+                explanations.append(
+                    f"'{t1.title}' has a deadline at {t1_d}, so it was prioritized before '{t2.title}', which has no specific deadline."
+                )
+            elif t1 and t2:
+                explanations.append(
+                    f"'{t1.title}' ({t1.priority}) was scheduled before '{t2.title}' ({t2.priority}) based on priority and duration fit."
+                )
+        elif len(ordered_tasks) == 1:
+            t = tasks_by_id.get(ordered_tasks[0].task_id) if ordered_tasks[0].task_id else None
+            st_time = ordered_tasks[0].start_time.strftime("%I:%M %p").lstrip("0")
+            if t and t.deadline:
+                dl_time = t.deadline.strftime("%I:%M %p").lstrip("0")
+                explanations.append(
+                    f"'{t.title}' is scheduled at {st_time} to complete safely before its deadline at {dl_time}."
+                )
+            elif t:
+                explanations.append(
+                    f"'{t.title}' is scheduled at {st_time} within your configured working window."
+                )
+
+        if unscheduled_tasks:
+            for u in unscheduled_tasks:
+                explanations.append(f"Notice: '{u.task_title}' cannot fit before its deadline ({u.reason}).")
+
+        if not explanations:
+            explanations.append("Deterministic schedule generated respecting deadlines and working hours.")
+
+        return " ".join(explanations)
 
     def _merge_intervals(self, intervals: list[TimeInterval]) -> list[TimeInterval]:
         """Merge overlapping or contiguous intervals into disjoint intervals."""
@@ -362,19 +444,21 @@ class DeterministicSchedulerEngine:
         return free
 
     def _sort_tasks(self, tasks: list[SchedulableTask]) -> list[SchedulableTask]:
-        """Deterministic multi-key sorting comparator:
+        """Deterministic Earliest-Deadline-First (EDF) comparator:
 
-        1. Priority Rank (P1=1, P2=2, P3=3, P4=4)
-        2. Deadline Urgency (Earliest deadline first; None placed last)
-        3. Duration LPT (Longest Processing Time first, -duration)
-        4. Tie-breaker: Task ID UUID string.
+        1. Deadline bound tasks precede open-ended tasks (has_deadline: 0 for deadline, 1 for None).
+        2. Earliest deadline timestamp first.
+        3. Priority Rank tie-breaker (P1=1, P2=2, P3=3, P4=4).
+        4. Duration LPT tie-breaker (Longest Processing Time first, -duration).
+        5. Deterministic tie-breaker: Task ID UUID string.
         """
         priority_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
 
-        def sort_key(t: SchedulableTask) -> tuple[int, datetime, int, str]:
-            p_rank = priority_order.get(t.priority, 3)
+        def sort_key(t: SchedulableTask) -> tuple[int, datetime, int, int, str]:
+            has_deadline = 0 if t.deadline is not None else 1
             d_time = t.deadline if t.deadline is not None else datetime.max.replace(tzinfo=UTC)
+            p_rank = priority_order.get(t.priority, 3)
             duration_lpt = -t.duration_minutes
-            return (p_rank, d_time, duration_lpt, str(t.id))
+            return (has_deadline, d_time, p_rank, duration_lpt, str(t.id))
 
         return sorted(tasks, key=sort_key)

@@ -243,12 +243,19 @@ export default function SchedulePage() {
             </div>
 
             {/* Summary metrics if available in proposal */}
-            <div className="grid grid-cols-2 gap-2 border-t border-amber-500/20 pt-2 text-[11px] text-amber-300 sm:grid-cols-4 font-mono">
-              <div>Task Minutes: {proposal.summary.total_scheduled_task_minutes}m</div>
-              <div>Fixed Minutes: {proposal.summary.total_fixed_minutes}m</div>
-              <div>Free Minutes: {proposal.summary.total_free_minutes}m</div>
-              <div>Utilization: {proposal.summary.utilization_percentage.toFixed(1)}%</div>
-            </div>
+            {proposal.summary && (
+              <div className="grid grid-cols-2 gap-2 border-t border-amber-500/20 pt-2 text-[11px] text-amber-300 sm:grid-cols-4 font-mono">
+                <div>Task Minutes: {proposal.summary.total_scheduled_task_minutes ?? 0}m</div>
+                <div>Fixed Minutes: {proposal.summary.total_fixed_minutes ?? 0}m</div>
+                <div>Free Minutes: {proposal.summary.total_free_minutes ?? 0}m</div>
+                <div>Utilization: {(proposal.summary.utilization_percentage ?? 0).toFixed(1)}%</div>
+              </div>
+            )}
+            {proposal.scheduling_explanation && (
+              <div className="border-t border-brand-500/20 pt-2 text-xs text-brand-300">
+                💡 <strong>Agent Recommendation:</strong> {proposal.scheduling_explanation}
+              </div>
+            )}
           </div>
         )}
 
