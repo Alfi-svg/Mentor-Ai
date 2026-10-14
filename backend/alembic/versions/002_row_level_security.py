@@ -32,6 +32,20 @@ def upgrade() -> None:
         # RLS is PostgreSQL-specific; SQLite uses application-level ownership filtering
         return
 
+    # Ensure schema 'auth' and helper function 'auth.uid()' exist for PostgreSQL
+    op.execute("CREATE SCHEMA IF NOT EXISTS auth;")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid AS $$
+        BEGIN
+            RETURN NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid;
+        EXCEPTION WHEN OTHERS THEN
+            RETURN NULL;
+        END;
+        $$ LANGUAGE plpgsql STABLE;
+        """
+    )
+
     # Enable RLS on profiles (isolated by primary key id = auth.uid())
     op.execute("ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;")
     op.execute(
