@@ -140,16 +140,17 @@ class DeterministicSchedulerEngine:
         free_intervals: list[TimeInterval] = self._compute_free_intervals(merged_occupied)
 
         # -----------------------------------------------------------------
-        # Step 4: Deterministic Multi-Key Sorting of Tasks
+        # Step 4: Deterministic Multi-Key Sorting with Dependency Resolution
         # -----------------------------------------------------------------
-        sorted_tasks = self._sort_tasks(self.tasks)
+        sorted_tasks, cyclic_unscheduled = self._sort_tasks(self.tasks)
 
         # -----------------------------------------------------------------
         # Step 5: First-Fit Task Allocation & Break Injection
         # -----------------------------------------------------------------
         scheduled_task_blocks: list[ScheduleBlockProposal] = []
         break_blocks: list[ScheduleBlockProposal] = []
-        unscheduled_tasks: list[UnscheduledTaskInfo] = []
+        unscheduled_tasks: list[UnscheduledTaskInfo] = list(cyclic_unscheduled)
+        completed_task_end_times: dict[uuid.UUID, datetime] = {}
 
         # Mutable tracking of remaining free intervals
         mutable_free: list[list[datetime]] = [
@@ -160,15 +161,43 @@ class DeterministicSchedulerEngine:
             duration = timedelta(minutes=task.duration_minutes)
             placed = False
 
+            # Check prerequisite task constraints
+            min_permissible_start = self.working_interval.start_time
+            unmet_prereq_title: str | None = None
+            for dep_id in getattr(task, "dependencies", []):
+                if dep_id in tasks_by_id:
+                    if dep_id not in completed_task_end_times:
+                        unmet_prereq_title = tasks_by_id[dep_id].title
+                        break
+                    else:
+                        dep_end = completed_task_end_times[dep_id]
+                        if dep_end > min_permissible_start:
+                            min_permissible_start = dep_end
+
+            if unmet_prereq_title:
+                unscheduled_tasks.append(
+                    UnscheduledTaskInfo(
+                        task_id=task.id,
+                        task_title=task.title,
+                        required_minutes=task.duration_minutes,
+                        priority=task.priority,
+                        deadline=task.deadline,
+                        reason=f"Prerequisite task '{unmet_prereq_title}' was not scheduled.",
+                        max_available_gap_minutes=0,
+                        suggested_actions=[
+                            f"Ensure prerequisite task '{unmet_prereq_title}' has sufficient capacity to complete first"
+                        ],
+                    )
+                )
+                continue
+
             for slot_idx, slot in enumerate(mutable_free):
                 slot_start, slot_end = slot[0], slot[1]
-                slot_capacity = (slot_end - slot_start).total_seconds() / 60
-
-                if slot_capacity < task.duration_minutes:
-                    continue
-
-                candidate_start = slot_start
+                candidate_start = max(slot_start, min_permissible_start)
                 candidate_end = candidate_start + duration
+
+                if candidate_end > slot_end:
+                    continue
 
                 # Check deadline constraint
                 if task.deadline is not None and candidate_end > task.deadline:
@@ -188,7 +217,7 @@ class DeterministicSchedulerEngine:
                             tzinfo=UTC,
                         )
                         if candidate_start < dt_limit:
-                            candidate_start = dt_limit
+                            candidate_start = max(dt_limit, min_permissible_start)
                             candidate_end = candidate_start + duration
                             if candidate_end > slot_end:
                                 continue
@@ -206,6 +235,7 @@ class DeterministicSchedulerEngine:
                     is_fixed=False,
                 )
                 scheduled_task_blocks.append(task_block)
+                completed_task_end_times[task.id] = candidate_end
                 placed = True
 
                 # Check break injection rule (task duration >= threshold)
@@ -228,15 +258,24 @@ class DeterministicSchedulerEngine:
                         break_blocks.append(break_block)
                         next_free_start = break_candidate_end
 
-                # Update the remaining slot capacity in mutable_free
+                # Update the remaining slot capacity in mutable_free (preserve pre-gap and post-gap)
+                new_openings: list[list[datetime]] = []
+                if (
+                    candidate_start > slot_start
+                    and (candidate_start - slot_start).total_seconds() / 60 >= self.minimum_gap_minutes
+                ):
+                    new_openings.append([slot_start, candidate_start])
+
                 if (
                     next_free_start < slot_end
-                    and (slot_end - next_free_start).total_seconds() / 60
-                    >= self.minimum_gap_minutes
+                    and (slot_end - next_free_start).total_seconds() / 60 >= self.minimum_gap_minutes
                 ):
-                    mutable_free[slot_idx] = [next_free_start, slot_end]
-                else:
-                    mutable_free.pop(slot_idx)
+                    new_openings.append([next_free_start, slot_end])
+
+                mutable_free.pop(slot_idx)
+                for opening in new_openings:
+                    mutable_free.append(opening)
+                mutable_free.sort(key=lambda s: s[0])
                 break
 
             if not placed:
@@ -249,7 +288,25 @@ class DeterministicSchedulerEngine:
                         max_gap = gap_mins
 
                 # Formulate transparent conflict diagnostic
-                if total_free < task.duration_minutes:
+                if min_permissible_start > self.working_interval.start_time:
+                    if total_free < task.duration_minutes:
+                        reason = (
+                            f"Insufficient total open time ({total_free} min remaining, "
+                            f"task requires {task.duration_minutes} min)."
+                        )
+                    elif max_gap < task.duration_minutes:
+                        reason = (
+                            f"No contiguous slot large enough after prerequisite completion "
+                            f"(largest available slot is {max_gap} min, task requires {task.duration_minutes} min)."
+                        )
+                    elif task.deadline is not None:
+                        reason = (
+                            f"Task deadline ({task.deadline.strftime('%I:%M %p UTC')}) occurs before "
+                            f"an available slot can be scheduled after prerequisite completion."
+                        )
+                    else:
+                        reason = f"Prerequisite finished too late to accommodate a {task.duration_minutes} min slot."
+                elif total_free < task.duration_minutes:
                     reason = (
                         f"Insufficient total open time ({total_free} min remaining, "
                         f"task requires {task.duration_minutes} min)."
@@ -261,7 +318,7 @@ class DeterministicSchedulerEngine:
                     )
                 elif task.deadline is not None:
                     reason = (
-                        f"Task deadline ({task.deadline.strftime('%H:%M UTC')}) occurs before "
+                        f"Task deadline ({task.deadline.strftime('%I:%M %p UTC')}) occurs before "
                         f"an available {task.duration_minutes} min slot can be scheduled."
                     )
                 else:
@@ -318,9 +375,11 @@ class DeterministicSchedulerEngine:
         if not validation.is_valid:
             conflicts.extend(validation.errors)
 
-        status_result: Literal["feasible", "conflict_detected"] = (
+        status_result: Literal["feasible", "conflict_detected", "partial", "infeasible"] = (
             "feasible"
             if len(unscheduled_tasks) == 0 and validation.is_valid
+            else "infeasible"
+            if len(unscheduled_tasks) > 0
             else "conflict_detected"
         )
 
@@ -364,7 +423,11 @@ class DeterministicSchedulerEngine:
             second_b = ordered_tasks[1]
             t1 = tasks_by_id.get(first_b.task_id) if first_b.task_id else None
             t2 = tasks_by_id.get(second_b.task_id) if second_b.task_id else None
-            if t1 and t2 and t1.deadline and t2.deadline:
+            if t1 and t2 and t1.id in getattr(t2, "dependencies", []):
+                explanations.append(
+                    f"'{t1.title}' was scheduled before '{t2.title}' to satisfy the required prerequisite dependency."
+                )
+            elif t1 and t2 and t1.deadline and t2.deadline:
                 t1_d = t1.deadline.strftime("%I:%M %p").lstrip("0")
                 t2_d = t2.deadline.strftime("%I:%M %p").lstrip("0")
                 if t1.deadline < t2.deadline:
@@ -443,22 +506,82 @@ class DeterministicSchedulerEngine:
 
         return free
 
-    def _sort_tasks(self, tasks: list[SchedulableTask]) -> list[SchedulableTask]:
-        """Deterministic Earliest-Deadline-First (EDF) comparator:
+    def _sort_tasks(
+        self, tasks: list[SchedulableTask]
+    ) -> tuple[list[SchedulableTask], list[UnscheduledTaskInfo]]:
+        """Deterministic Earliest-Deadline-First (EDF) comparator with dependency ordering.
 
-        1. Deadline bound tasks precede open-ended tasks (has_deadline: 0 for deadline, 1 for None).
-        2. Earliest deadline timestamp first.
-        3. Priority Rank tie-breaker (P1=1, P2=2, P3=3, P4=4).
-        4. Duration LPT tie-breaker (Longest Processing Time first, -duration).
-        5. Deterministic tie-breaker: Task ID UUID string.
+        1. Explicit task dependencies: prerequisites precede dependent tasks (topological depth).
+        2. Deadline-bound tasks precede open-ended tasks (has_deadline: 0 for deadline, 1 for None).
+        3. Earliest deadline timestamp first.
+        4. Priority rank tie-breaker (P1=1, P2=2, P3=3, P4=4).
+        5. Duration LPT tie-breaker (Longest Processing Time first, -duration).
+        6. Deterministic tie-breaker: Task ID UUID string.
         """
+        if not tasks:
+            return [], []
+
+        tasks_by_id = {t.id: t for t in tasks}
         priority_order = {"P1": 1, "P2": 2, "P3": 3, "P4": 4}
 
-        def sort_key(t: SchedulableTask) -> tuple[int, datetime, int, int, str]:
+        def tie_breaker_key(t: SchedulableTask) -> tuple[int, datetime, int, int, str]:
             has_deadline = 0 if t.deadline is not None else 1
             d_time = t.deadline if t.deadline is not None else datetime.max.replace(tzinfo=UTC)
             p_rank = priority_order.get(t.priority, 3)
             duration_lpt = -t.duration_minutes
             return (has_deadline, d_time, p_rank, duration_lpt, str(t.id))
 
-        return sorted(tasks, key=sort_key)
+        # Check if any dependencies exist within the task set
+        has_internal_deps = any(
+            any(dep_id in tasks_by_id and dep_id != t.id for dep_id in getattr(t, "dependencies", []))
+            for t in tasks
+        )
+
+        if not has_internal_deps:
+            # Pure EDF fast path when no dependency graph constraints exist
+            return sorted(tasks, key=tie_breaker_key), []
+
+        # Build adjacency graph and in-degrees for Kahn's topological sort
+        adj: dict[uuid.UUID, list[uuid.UUID]] = {t.id: [] for t in tasks}
+        in_degree: dict[uuid.UUID, int] = {t.id: 0 for t in tasks}
+
+        for t in tasks:
+            for dep_id in getattr(t, "dependencies", []):
+                if dep_id in tasks_by_id and dep_id != t.id:
+                    adj[dep_id].append(t.id)
+                    in_degree[t.id] += 1
+
+        ready: list[SchedulableTask] = [
+            tasks_by_id[tid] for tid, deg in in_degree.items() if deg == 0
+        ]
+        ready.sort(key=tie_breaker_key)
+
+        sorted_tasks: list[SchedulableTask] = []
+        while ready:
+            curr = ready.pop(0)
+            sorted_tasks.append(curr)
+            for dependent_id in adj[curr.id]:
+                in_degree[dependent_id] -= 1
+                if in_degree[dependent_id] == 0:
+                    ready.append(tasks_by_id[dependent_id])
+                    ready.sort(key=tie_breaker_key)
+
+        cyclic_unscheduled: list[UnscheduledTaskInfo] = []
+        if len(sorted_tasks) < len(tasks):
+            visited_ids = {t.id for t in sorted_tasks}
+            for t in tasks:
+                if t.id not in visited_ids:
+                    cyclic_unscheduled.append(
+                        UnscheduledTaskInfo(
+                            task_id=t.id,
+                            task_title=t.title,
+                            required_minutes=t.duration_minutes,
+                            priority=t.priority,
+                            deadline=t.deadline,
+                            reason=f"Cyclic dependency detected: task '{t.title}' is part of a circular dependency loop.",
+                            max_available_gap_minutes=0,
+                            suggested_actions=["Remove circular dependencies between tasks"],
+                        )
+                    )
+
+        return sorted_tasks, cyclic_unscheduled

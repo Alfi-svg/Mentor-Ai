@@ -187,18 +187,35 @@ class PlannerService:
                         )
                     )
 
-                # Schedulable tasks (ephemeral UUIDs for preview)
-                preview_tasks: list[SchedulableTask] = [
-                    SchedulableTask(
-                        id=uuid.uuid4(),
-                        title=dt.title,
-                        duration_minutes=dt.duration_minutes or 45,
-                        priority=dt.priority,
-                        deadline=dt.deadline,
-                        energy_level=dt.energy_level or "medium",
+                # Schedulable tasks (ephemeral UUIDs for preview with resolved dependencies)
+                task_uuid_map: dict[str, uuid.UUID] = {dt.title.lower(): uuid.uuid4() for dt in draft.tasks}
+                preview_tasks: list[SchedulableTask] = []
+                for dt in draft.tasks:
+                    t_id = task_uuid_map[dt.title.lower()]
+                    dep_ids: list[uuid.UUID] = []
+                    for dep_ref in getattr(dt, "depends_on", []):
+                        dep_clean = dep_ref.lower().strip()
+                        matched_id = task_uuid_map.get(dep_clean)
+                        if not matched_id:
+                            for k, v in task_uuid_map.items():
+                                if dep_clean in k or k in dep_clean:
+                                    matched_id = v
+                                    break
+                        if matched_id and matched_id != t_id and matched_id not in dep_ids:
+                            dep_ids.append(matched_id)
+
+                    preview_tasks.append(
+                        SchedulableTask(
+                            id=t_id,
+                            title=dt.title,
+                            duration_minutes=dt.duration_minutes or 45,
+                            priority=dt.priority,
+                            deadline=dt.deadline,
+                            energy_level=dt.energy_level or "medium",
+                            dependencies=dep_ids,
+                            constraints={"depends_on": [str(d) for d in dep_ids]} if dep_ids else {},
+                        )
                     )
-                    for dt in draft.tasks
-                ]
 
                 solver = DeterministicSchedulerEngine(
                     working_interval=working_interval,
@@ -239,9 +256,42 @@ class PlannerService:
         client_ip: str | None = None,
     ) -> PlanConfirmResponse:
         """Persist confirmed tasks and fixed events, then generate and save the schedule via Day 5 solver."""
+        # Idempotency guard: Return prior confirmation if proposal_id was already confirmed
+        if req.proposal_id:
+            existing_audit_res = await db.execute(
+                select(AuditLog).where(
+                    AuditLog.user_id == user_id,
+                    AuditLog.action == "plan_confirmed",
+                    AuditLog.resource_id == req.proposal_id,
+                )
+            )
+            prior_audit = existing_audit_res.scalar_one_or_none()
+            if prior_audit is not None:
+                persisted_sched_id = (
+                    prior_audit.details.get("persisted_schedule_id")
+                    if isinstance(prior_audit.details, dict)
+                    else None
+                )
+                prior_tasks_res = await db.execute(
+                    select(Task)
+                    .where(Task.user_id == user_id, Task.is_archived.is_(False))
+                    .order_by(Task.created_at.desc())
+                    .limit(len(req.tasks) if req.tasks else 10)
+                )
+                tasks_list = [TaskResponse.model_validate(t) for t in prior_tasks_res.scalars().all()]
+                return PlanConfirmResponse(
+                    target_date=req.target_date,
+                    created_tasks=tasks_list,
+                    created_events=[],
+                    schedule=None,
+                    persisted_schedule_id=persisted_sched_id,
+                    status="confirmed",
+                )
+
         created_tasks: list[TaskResponse] = []
         created_events: list[dict[str, Any]] = []
         persisted_task_ids: list[uuid.UUID] = []
+        created_task_models: list[Task] = []
 
         # 1. Persist new tasks
         if req.persist_tasks and req.tasks:
@@ -252,8 +302,41 @@ class PlannerService:
                     payload=task_payload,
                     client_ip=client_ip,
                 )
+                created_task_models.append(created_task_model)
                 created_tasks.append(TaskResponse.model_validate(created_task_model))
                 persisted_task_ids.append(created_task_model.id)
+
+            # Map any task title references in constraints["depends_on"] to newly created task UUIDs
+            tasks_by_title = {t.title.lower(): t.id for t in created_task_models}
+            for model in created_task_models:
+                c = dict(model.constraints or {})
+                raw_deps = c.get("depends_on") or c.get("dependencies")
+                if isinstance(raw_deps, list) and raw_deps:
+                    resolved_deps: list[str] = []
+                    changed = False
+                    for dep in raw_deps:
+                        dep_str = str(dep)
+                        try:
+                            uuid.UUID(dep_str)
+                            resolved_deps.append(dep_str)
+                        except (ValueError, TypeError):
+                            matched = tasks_by_title.get(dep_str.lower())
+                            if not matched:
+                                for k, uid_val in tasks_by_title.items():
+                                    if dep_str.lower() in k or k in dep_str.lower():
+                                        matched = uid_val
+                                        break
+                            if matched and matched != model.id:
+                                resolved_deps.append(str(matched))
+                                changed = True
+                            else:
+                                resolved_deps.append(dep_str)
+                    if changed:
+                        c["depends_on"] = resolved_deps
+                        model.constraints = c
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(model, "constraints")
+            await db.flush()
 
         # 2. Persist new fixed events
         if req.fixed_events:

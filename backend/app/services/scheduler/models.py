@@ -48,6 +48,25 @@ class SchedulableTask(BaseModel):
     energy_level: Literal["high", "medium", "low"] = "medium"
     constraints: dict[str, Any] = Field(default_factory=dict)
     allow_split: bool = False
+    dependencies: list[uuid.UUID] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_task_dependencies(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "dependencies" not in data or not data["dependencies"]:
+                constraints = data.get("constraints")
+                if isinstance(constraints, dict):
+                    raw_deps = constraints.get("depends_on") or constraints.get("dependencies")
+                    if isinstance(raw_deps, list):
+                        deps: list[Any] = []
+                        for d in raw_deps:
+                            try:
+                                deps.append(uuid.UUID(str(d)) if not isinstance(d, uuid.UUID) else d)
+                            except (ValueError, TypeError):
+                                pass
+                        data["dependencies"] = deps
+        return data
 
     @field_validator("deadline", mode="after")
     @classmethod
@@ -162,7 +181,7 @@ class ScheduleProposal(BaseModel):
     schedule_id: uuid.UUID = Field(default_factory=uuid.uuid4)
     target_date: date
     timezone: str
-    status: Literal["feasible", "conflict_detected"]
+    status: Literal["feasible", "conflict_detected", "partial", "infeasible"] = "feasible"
     total_scheduled_minutes: int
     total_free_minutes: int
     summary: ScheduleSummary = Field(default_factory=ScheduleSummary)
@@ -174,4 +193,8 @@ class ScheduleProposal(BaseModel):
     conflicts: list[str] = Field(default_factory=list)
     unscheduled_tasks: list[UnscheduledTaskInfo] = Field(default_factory=list)
     validation: ScheduleValidationResult
+
+    @property
+    def is_feasible(self) -> bool:
+        return self.status == "feasible" and getattr(self.validation, "is_valid", True)
 

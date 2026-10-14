@@ -92,11 +92,12 @@ class SchedulerService:
             tz_name=tz_name,
         )
 
-        # 3. Retrieve tasks to schedule
+        # 3. Retrieve tasks to schedule (strictly pending or in_progress, excluding completed/cancelled)
         if task_ids:
             tasks_stmt = select(Task).where(
                 Task.user_id == user_id,
                 Task.id.in_(task_ids),
+                Task.status.in_(["pending", "in_progress"]),
                 Task.is_archived.is_(False),
             )
         else:
@@ -109,19 +110,30 @@ class SchedulerService:
         tasks_res = await db.execute(tasks_stmt)
         db_tasks = list(tasks_res.scalars().all())
 
-        schedulable_tasks = [
-            SchedulableTask(
-                id=t.id,
-                title=t.title,
-                duration_minutes=t.duration_minutes,
-                priority=t.priority,  # type: ignore[arg-type]
-                deadline=t.deadline,
-                energy_level=t.energy_level,  # type: ignore[arg-type]
-                constraints=t.constraints,
-                allow_split=bool(t.constraints.get("allow_split", False)),
+        schedulable_tasks: list[SchedulableTask] = []
+        for t in db_tasks:
+            deps: list[uuid.UUID] = []
+            if isinstance(t.constraints, dict):
+                raw_deps = t.constraints.get("depends_on") or t.constraints.get("dependencies") or []
+                if isinstance(raw_deps, list):
+                    for d in raw_deps:
+                        try:
+                            deps.append(uuid.UUID(str(d)) if not isinstance(d, uuid.UUID) else d)
+                        except (ValueError, TypeError):
+                            pass
+            schedulable_tasks.append(
+                SchedulableTask(
+                    id=t.id,
+                    title=t.title,
+                    duration_minutes=t.duration_minutes,
+                    priority=t.priority,  # type: ignore[arg-type]
+                    deadline=t.deadline,
+                    energy_level=t.energy_level,  # type: ignore[arg-type]
+                    constraints=t.constraints,
+                    allow_split=bool(t.constraints.get("allow_split", False)),
+                    dependencies=deps,
+                )
             )
-            for t in db_tasks
-        ]
 
         # 4. Retrieve fixed calendar commitments overlapping with the working window
         cal_stmt = select(CalendarEvent).where(
@@ -181,6 +193,11 @@ class SchedulerService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 error_code="INVALID_SCHEDULE_PROPOSAL",
             )
+
+        # Idempotency: Return existing schedule if this proposal was already approved and persisted
+        existing_sched = await db.get(Schedule, proposal.schedule_id)
+        if existing_sched is not None:
+            return existing_sched
 
         # 1. Supersede any existing active schedule for the target date
         await db.execute(

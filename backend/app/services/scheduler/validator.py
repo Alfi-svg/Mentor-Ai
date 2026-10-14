@@ -103,6 +103,28 @@ def validate_schedule(
     if len(block_ids) != len(set(block_ids)):
         errors.append("Duplicate block IDs detected in schedule proposal.")
 
+    # 7. Task dependency ordering check
+    if tasks_by_id:
+        task_end_times = {
+            b.task_id: b.end_time for b in blocks if b.block_type == "task" and b.task_id
+        }
+        for b in blocks:
+            if b.block_type == "task" and b.task_id in tasks_by_id:
+                task = tasks_by_id[b.task_id]
+                for dep_id in getattr(task, "dependencies", []):
+                    if dep_id in tasks_by_id:
+                        dep_task = tasks_by_id[dep_id]
+                        if dep_id not in task_end_times:
+                            errors.append(
+                                f"Dependency violation: Task '{task.title}' was scheduled, but its "
+                                f"prerequisite task '{dep_task.title}' was not scheduled."
+                            )
+                        elif b.start_time < task_end_times[dep_id]:
+                            errors.append(
+                                f"Dependency ordering violation: Task '{task.title}' starts at {b.start_time.isoformat()}, "
+                                f"which is before prerequisite '{dep_task.title}' finishes at {task_end_times[dep_id].isoformat()}."
+                            )
+
     return ScheduleValidationResult(
         is_valid=len(errors) == 0,
         errors=errors,

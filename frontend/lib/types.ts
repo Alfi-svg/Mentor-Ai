@@ -228,6 +228,7 @@ export interface DetectedTask {
   priority: TaskPriority;
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
+  depends_on?: string[];
 }
 
 export interface PlanProposalResponse {

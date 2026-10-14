@@ -82,6 +82,10 @@ class DetectedTask(BaseModel):
         default=None,
         description="Optional scheduling constraints",
     )
+    depends_on: list[str] = Field(
+        default_factory=list,
+        description="Optional prerequisite task titles or references",
+    )
 
     model_config = ConfigDict(extra="ignore")
 

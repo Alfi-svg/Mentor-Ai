@@ -222,13 +222,33 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
         return events, remaining
 
     def _extract_tasks(self, text: str, target_date: date, tz: ZoneInfo) -> list[DetectedTask]:
-        """Extract tasks with duration, priority, and optional deadlines."""
+        """Extract tasks with duration, priority, optional deadlines, and dependency ordering."""
         tasks: list[DetectedTask] = []
 
-        # Split clauses by comma, colon, semicolon, period, newline, 'and', 'also'
-        clauses = re.split(r"[,;:.\n]|\band\b|\balso\b", text, flags=re.IGNORECASE)
+        # Mark explicit sequential transitions with a sentinel token
+        marked_text = re.sub(
+            r"\b(then|after\s+that|followed\s+by|next)\b",
+            " ___DEP_SEQ___ ",
+            text,
+            flags=re.IGNORECASE,
+        )
 
-        for raw_clause in clauses:
+        # Split clauses by comma, colon, semicolon, period, newline, 'and', 'also', or sequence sentinel
+        raw_segments = re.split(
+            r"[,;:.\n]|\band\b|\balso\b|(___DEP_SEQ___)",
+            marked_text,
+            flags=re.IGNORECASE,
+        )
+
+        is_dependent_on_prev = False
+        for raw_clause in raw_segments:
+            if not raw_clause:
+                continue
+
+            if "___DEP_SEQ___" in raw_clause:
+                is_dependent_on_prev = True
+                continue
+
             clause = raw_clause.strip()
             if not clause or len(clause) < 3:
                 continue
@@ -241,7 +261,26 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
             ):
                 continue
 
-            # 1. Duration extraction
+            # 1. Dependency detection (explicit or sequential)
+            task_deps: list[str] = []
+            if is_dependent_on_prev and tasks:
+                task_deps.append(tasks[-1].title)
+                is_dependent_on_prev = False
+
+            # Check explicit "after X" or "depends on X"
+            explicit_dep_match = re.search(
+                r"\b(?:after|depends\s+on|following)\s+([a-zA-Z0-9\s_-]+?)(?:\s+for|\s+by|\s+due|\s+at|$)",
+                clause,
+                re.IGNORECASE,
+            )
+            if explicit_dep_match:
+                dep_target = explicit_dep_match.group(1).strip()
+                if dep_target and len(dep_target) >= 2:
+                    clean_dep = re.sub(r"^(?:the|a|an)\s+", "", dep_target, flags=re.IGNORECASE).capitalize()
+                    if clean_dep not in task_deps:
+                        task_deps.append(clean_dep)
+
+            # 2. Duration extraction
             duration_minutes: int | None = None
             dur_match_h = re.search(r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b", clause, re.IGNORECASE)
             dur_match_m = re.search(r"(\d+)\s*(?:minutes?|mins?|m)\b", clause, re.IGNORECASE)
@@ -251,7 +290,7 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
             elif dur_match_m:
                 duration_minutes = int(dur_match_m.group(1))
 
-            # 2. Priority extraction
+            # 3. Priority extraction
             priority: TaskPriority = "P3"
             if re.search(r"\b(p1|urgent|critical|highest\s+priority)\b", clause, re.IGNORECASE):
                 priority = "P1"
@@ -260,7 +299,7 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
             elif re.search(r"\b(p4|low\s+priority)\b", clause, re.IGNORECASE):
                 priority = "P4"
 
-            # 3. Deadline extraction (e.g. "by 5pm", "before 18:00")
+            # 4. Deadline extraction (e.g. "by 5pm", "before 18:00")
             deadline_dt: datetime | None = None
             dl_match = re.search(
                 r"\b(?:by|before|due(?:\s+at)?)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
@@ -276,7 +315,7 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
                 except ValueError:
                     pass
 
-            # 4. Clean task title
+            # 5. Clean task title
             cleaned_title = re.sub(
                 r"\b(?:i\s+need|need|have\s+to|want\s+to|must|take|takes|that\s+needs|needing|about|around)\b",
                 " ",
@@ -304,10 +343,20 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
                 cleaned_title,
                 flags=re.IGNORECASE,
             )
-            cleaned_title = re.sub(r"\s+", " ", cleaned_title).strip()
-            # Strip leading prepositions/articles
+            # Remove explicit dependency clause from title
             cleaned_title = re.sub(
-                r"^(?:for|to|and|also|a|an|the)\s+", "", cleaned_title, flags=re.IGNORECASE
+                r"\b(?:after|depends\s+on|following)\s+[a-zA-Z0-9\s_-]+",
+                " ",
+                cleaned_title,
+                flags=re.IGNORECASE,
+            )
+            cleaned_title = re.sub(r"\s+", " ", cleaned_title).strip()
+            # Strip leading sequence words or prepositions
+            cleaned_title = re.sub(
+                r"^(?:for|to|and|also|a|an|the|first|secondly|finally|then)\s+",
+                "",
+                cleaned_title,
+                flags=re.IGNORECASE,
             ).strip()
 
             # Ignore residual connector remnants or preamble artifacts
@@ -341,6 +390,7 @@ class DeterministicOfflineAdapter(BaseLLMAdapter):
                     duration_minutes=duration_minutes,
                     priority=priority,
                     deadline=deadline_dt,
+                    depends_on=task_deps,
                 )
             )
 
