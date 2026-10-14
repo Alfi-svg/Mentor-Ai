@@ -13,8 +13,8 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from alembic import op
 
-revision: str = "004_external_calendar_connections"
-down_revision: str | None = "003_task_constraints_and_archiving"
+revision: str = "004_external_calendar"
+down_revision: str | None = "003_task_constraints"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

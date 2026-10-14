@@ -12,13 +12,18 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "003_task_constraints_and_archiving"
+revision: str = "003_task_constraints"
 down_revision: str | None = "002_row_level_security"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # 0. Widen alembic_version.version_num on PostgreSQL to support revision IDs > 32 characters
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute("ALTER TABLE IF EXISTS alembic_version ALTER COLUMN version_num TYPE VARCHAR(128);")
+
     # 1. Add constraints JSON column with empty object default
     op.add_column(
         "tasks",

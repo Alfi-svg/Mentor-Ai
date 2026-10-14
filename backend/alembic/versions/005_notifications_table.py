@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "005_notifications_table"
-down_revision: str | None = "004_external_calendar_connections"
+down_revision: str | None = "004_external_calendar"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
