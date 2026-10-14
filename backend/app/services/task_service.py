@@ -129,6 +129,7 @@ class TaskService:
         due_before: datetime | None = None,
         due_after: datetime | None = None,
         is_archived: bool = False,
+        is_overdue: bool | None = None,
         sort_by: TaskSortBy = "created_at",
         sort_order: SortOrder = "desc",
         limit: int = 50,
@@ -166,6 +167,17 @@ class TaskService:
 
         if due_after:
             base_query = base_query.where(Task.deadline >= due_after)
+
+        if is_overdue is True:
+            base_query = base_query.where(
+                Task.deadline.isnot(None),
+                Task.deadline < datetime.now(UTC),
+                Task.status.in_(["pending", "in_progress"]),
+            )
+        elif is_overdue is False:
+            base_query = base_query.where(
+                or_(Task.deadline.is_(None), Task.deadline >= datetime.now(UTC))
+            )
 
         # 1. Total matching count
         count_stmt = select(func.count()).select_from(base_query.subquery())
@@ -218,6 +230,14 @@ class TaskService:
             if new_status != task.status:
                 validate_status_transition(task.status, new_status)
                 task.status = new_status
+                # Synchronize schedule block completion status
+                from sqlalchemy import update as sa_update
+                from app.db.models.schedule import ScheduleBlock
+                await db.execute(
+                    sa_update(ScheduleBlock)
+                    .where(ScheduleBlock.task_id == task.id, ScheduleBlock.user_id == user_id)
+                    .values(is_completed=(new_status == "completed"))
+                )
 
         # Apply other fields
         for field, value in updates.items():
@@ -226,13 +246,14 @@ class TaskService:
 
         task.updated_at = datetime.now(UTC)
 
+        action_name = "task_cancelled" if task.status == "cancelled" else "task_updated"
         audit_entry = AuditLog(
             id=uuid.uuid4(),
             user_id=user_id,
-            action="task_updated",
+            action=action_name,
             resource_type="task",
             resource_id=str(task.id),
-            details={"updated_fields": list(updates.keys())},
+            details={"updated_fields": list(updates.keys()), "status": task.status},
             ip_address=client_ip,
             created_at=datetime.now(UTC),
         )
@@ -286,8 +307,17 @@ class TaskService:
             return task
 
         validate_status_transition(task.status, "completed")
+        previous_status = task.status
         task.status = "completed"
         task.updated_at = datetime.now(UTC)
+
+        from sqlalchemy import update as sa_update
+        from app.db.models.schedule import ScheduleBlock
+        await db.execute(
+            sa_update(ScheduleBlock)
+            .where(ScheduleBlock.task_id == task.id, ScheduleBlock.user_id == user_id)
+            .values(is_completed=True)
+        )
 
         audit_entry = AuditLog(
             id=uuid.uuid4(),
@@ -295,7 +325,7 @@ class TaskService:
             action="task_completed",
             resource_type="task",
             resource_id=str(task.id),
-            details={"previous_status": task.status},
+            details={"previous_status": previous_status},
             ip_address=client_ip,
             created_at=datetime.now(UTC),
         )
@@ -323,6 +353,14 @@ class TaskService:
         previous_status = task.status
         task.status = "pending"
         task.updated_at = datetime.now(UTC)
+
+        from sqlalchemy import update as sa_update
+        from app.db.models.schedule import ScheduleBlock
+        await db.execute(
+            sa_update(ScheduleBlock)
+            .where(ScheduleBlock.task_id == task.id, ScheduleBlock.user_id == user_id)
+            .values(is_completed=False)
+        )
 
         audit_entry = AuditLog(
             id=uuid.uuid4(),
@@ -375,3 +413,28 @@ class TaskService:
 
         logger.info(action_name, task_id=str(task.id), user_id=str(user_id))
         return task
+
+    @staticmethod
+    async def archive_task(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        client_ip: str | None = None,
+    ) -> Task:
+        """Convenience method to archive a task."""
+        return await TaskService.set_archive_status(
+            db=db, user_id=user_id, task_id=task_id, is_archived=True, client_ip=client_ip
+        )
+
+    @staticmethod
+    async def unarchive_task(
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+        client_ip: str | None = None,
+    ) -> Task:
+        """Convenience method to unarchive a task."""
+        return await TaskService.set_archive_status(
+            db=db, user_id=user_id, task_id=task_id, is_archived=False, client_ip=client_ip
+        )
+

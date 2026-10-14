@@ -14,6 +14,7 @@ import {
   Menu,
   MessageSquareCode,
   ShieldAlert,
+  Sliders,
   Sparkles,
   User as UserIcon,
   X,
@@ -89,6 +90,12 @@ export function AppShell({ children }: AppShellProps) {
       label: "Approvals & History",
       icon: ShieldAlert,
       description: "Two-phase human approval",
+    },
+    {
+      href: "/settings/preferences",
+      label: "Preferences",
+      icon: Sliders,
+      description: "Routines & work hours",
     },
     {
       href: "/settings/calendar",

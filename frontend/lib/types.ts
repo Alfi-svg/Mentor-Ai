@@ -3,7 +3,7 @@
  */
 
 export type TaskPriority = "P1" | "P2" | "P3" | "P4";
-export type TaskStatus = "pending" | "in_progress" | "completed" | "archived";
+export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled" | "archived";
 
 export interface TaskConstraints {
   can_split?: boolean;
@@ -25,6 +25,9 @@ export interface Task {
   status: TaskStatus;
   is_completed: boolean;
   completed_at: string | null;
+  tags?: string[];
+  constraints?: Record<string, any>;
+  is_archived?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +41,9 @@ export interface TaskCreatePayload {
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
   availability_constraints?: TaskConstraints | null;
+  tags?: string[];
+  constraints?: Record<string, any>;
+  status?: TaskStatus;
 }
 
 export interface TaskUpdatePayload {
@@ -49,6 +55,9 @@ export interface TaskUpdatePayload {
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
   status?: TaskStatus;
+  tags?: string[];
+  constraints?: Record<string, any>;
+  is_archived?: boolean;
 }
 
 export interface UserPreferences {
@@ -56,6 +65,10 @@ export interface UserPreferences {
   work_end_time?: string;
   timezone?: string;
   buffer_minutes?: number;
+  default_task_duration?: number;
+  max_focus_hours_per_day?: number;
+  available_days?: number[];
+  auto_schedule_breaks?: boolean;
   allow_weekend_scheduling?: boolean;
   lunch_break_start?: string;
   lunch_break_duration_minutes?: number;

@@ -24,6 +24,7 @@ import {
   TaskStatus,
   TaskUpdatePayload,
   User,
+  UserPreferences,
   ValidationErrorItem,
 } from "./types";
 
@@ -237,12 +238,18 @@ export const apiClient = {
   async getTasks(params?: {
     status?: TaskStatus;
     priority?: TaskPriority;
+    is_archived?: boolean;
+    is_overdue?: boolean;
+    search?: string;
     limit?: number;
     offset?: number;
   }): Promise<Task[]> {
     const q = new URLSearchParams();
     if (params?.status) q.set("status", params.status);
     if (params?.priority) q.set("priority", params.priority);
+    if (params?.is_archived !== undefined) q.set("is_archived", String(params.is_archived));
+    if (params?.is_overdue !== undefined) q.set("is_overdue", String(params.is_overdue));
+    if (params?.search) q.set("search", params.search);
     if (params?.limit) q.set("limit", String(params.limit));
     if (params?.offset) q.set("offset", String(params.offset));
     const qs = q.toString() ? `?${q.toString()}` : "";
@@ -297,6 +304,28 @@ export const apiClient = {
   async reopenTask(id: string): Promise<Task> {
     const res = await request<Task>(`/tasks/${id}/reopen`, { method: "POST" });
     return normalizeTask(res);
+  },
+
+  async archiveTask(id: string): Promise<Task> {
+    const res = await request<Task>(`/tasks/${id}/archive`, { method: "POST" });
+    return normalizeTask(res);
+  },
+
+  async unarchiveTask(id: string): Promise<Task> {
+    const res = await request<Task>(`/tasks/${id}/unarchive`, { method: "POST" });
+    return normalizeTask(res);
+  },
+
+  // --- Preferences ---
+  async getPreferences(): Promise<UserPreferences> {
+    return request<UserPreferences>("/auth/preferences", { method: "GET" });
+  },
+
+  async updatePreferences(payload: UserPreferences): Promise<UserPreferences> {
+    return request<UserPreferences>("/auth/preferences", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
   },
 
   // --- Planner & Natural Language ---

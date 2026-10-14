@@ -3,7 +3,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Header, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.rate_limit import rate_limit
@@ -44,6 +44,7 @@ class PreferencesResponse(BaseModel):
     max_focus_hours_per_day: int
     available_days: list[int]
     auto_schedule_breaks: bool
+    timezone: str = "UTC"
 
 
 class UserProfileResponse(BaseModel):
@@ -66,6 +67,29 @@ class PreferencesUpdateRequest(BaseModel):
     max_focus_hours_per_day: int | None = Field(default=None, ge=1, le=16)
     available_days: list[int] | None = None
     auto_schedule_breaks: bool | None = None
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        import zoneinfo
+        try:
+            zoneinfo.ZoneInfo(v)
+        except Exception:
+            raise ValueError(f"Invalid IANA timezone identifier: '{v}'")
+        return v
+
+    @field_validator("available_days")
+    @classmethod
+    def validate_days(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
+        for day in v:
+            if not isinstance(day, int) or day < 1 or day > 7:
+                raise ValueError(f"available_days must contain integers 1 (Monday) to 7 (Sunday), received: {day}")
+        return sorted(list(set(v)))
 
 
 # -----------------------------------------------------------------------------
@@ -198,6 +222,7 @@ async def get_me(
         max_focus_hours_per_day=pref.max_focus_hours_per_day,
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
+        timezone=profile.timezone,
     )
 
     return UserProfileResponse(
@@ -209,19 +234,18 @@ async def get_me(
     )
 
 
-@router.put(
+@router.get(
     "/preferences",
     response_model=PreferencesResponse,
     status_code=status.HTTP_200_OK,
-    summary="Update Preferences",
-    description="Updates user scheduling preferences (working hours, buffers).",
+    summary="Get Preferences",
+    description="Retrieve user scheduling preferences (working hours, buffers, timezone).",
 )
-async def update_preferences(
-    request: PreferencesUpdateRequest,
+async def get_preferences(
     profile: Profile = Depends(get_current_active_profile),
     db: AsyncSession = Depends(get_db),
 ) -> PreferencesResponse:
-    """Update scheduling preferences for authenticated user."""
+    """Fetch current scheduling preferences for authenticated user."""
     from sqlalchemy import select
 
     from app.db.models.profile import UserPreferences
@@ -230,26 +254,19 @@ async def update_preferences(
     pref = await db.scalar(query)
 
     if not pref:
-        pref = UserPreferences(user_id=profile.id)
+        pref = UserPreferences(
+            user_id=profile.id,
+            work_start_time="09:00:00",
+            work_end_time="18:00:00",
+            buffer_minutes=15,
+            default_task_duration=45,
+            max_focus_hours_per_day=8,
+            available_days=[1, 2, 3, 4, 5],
+            auto_schedule_breaks=True,
+        )
         db.add(pref)
-
-    if request.work_start_time is not None:
-        pref.work_start_time = request.work_start_time
-    if request.work_end_time is not None:
-        pref.work_end_time = request.work_end_time
-    if request.buffer_minutes is not None:
-        pref.buffer_minutes = request.buffer_minutes
-    if request.default_task_duration is not None:
-        pref.default_task_duration = request.default_task_duration
-    if request.max_focus_hours_per_day is not None:
-        pref.max_focus_hours_per_day = request.max_focus_hours_per_day
-    if request.available_days is not None:
-        pref.available_days = request.available_days
-    if request.auto_schedule_breaks is not None:
-        pref.auto_schedule_breaks = request.auto_schedule_breaks
-
-    await db.commit()
-    await db.refresh(pref)
+        await db.commit()
+        await db.refresh(pref)
 
     return PreferencesResponse(
         work_start_time=pref.work_start_time,
@@ -259,4 +276,98 @@ async def update_preferences(
         max_focus_hours_per_day=pref.max_focus_hours_per_day,
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
+        timezone=profile.timezone,
+    )
+
+
+@router.put(
+    "/preferences",
+    response_model=PreferencesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update Preferences",
+    description="Updates user scheduling preferences (working hours, buffers, timezone).",
+)
+async def update_preferences(
+    request: PreferencesUpdateRequest,
+    profile: Profile = Depends(get_current_active_profile),
+    db: AsyncSession = Depends(get_db),
+) -> PreferencesResponse:
+    """Update scheduling preferences for authenticated user."""
+    from datetime import UTC, datetime
+    import uuid
+    from sqlalchemy import select
+
+    from app.core.errors import AppException
+    from app.db.models.action import AuditLog
+    from app.db.models.profile import UserPreferences
+
+    query = select(UserPreferences).where(UserPreferences.user_id == profile.id)
+    pref = await db.scalar(query)
+
+    if not pref:
+        pref = UserPreferences(user_id=profile.id)
+        db.add(pref)
+
+    # Validate working hours range
+    start_str = request.work_start_time or pref.work_start_time
+    end_str = request.work_end_time or pref.work_end_time
+    sh, sm = map(int, start_str.split(":")[:2])
+    eh, em = map(int, end_str.split(":")[:2])
+    if (sh, sm) == (eh, em):
+        raise AppException(
+            detail="work_start_time and work_end_time cannot be identical",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="INVALID_WORKING_HOURS",
+        )
+
+    updated_fields: list[str] = []
+    if request.work_start_time is not None:
+        pref.work_start_time = request.work_start_time
+        updated_fields.append("work_start_time")
+    if request.work_end_time is not None:
+        pref.work_end_time = request.work_end_time
+        updated_fields.append("work_end_time")
+    if request.buffer_minutes is not None:
+        pref.buffer_minutes = request.buffer_minutes
+        updated_fields.append("buffer_minutes")
+    if request.default_task_duration is not None:
+        pref.default_task_duration = request.default_task_duration
+        updated_fields.append("default_task_duration")
+    if request.max_focus_hours_per_day is not None:
+        pref.max_focus_hours_per_day = request.max_focus_hours_per_day
+        updated_fields.append("max_focus_hours_per_day")
+    if request.available_days is not None:
+        pref.available_days = request.available_days
+        updated_fields.append("available_days")
+    if request.auto_schedule_breaks is not None:
+        pref.auto_schedule_breaks = request.auto_schedule_breaks
+        updated_fields.append("auto_schedule_breaks")
+    if request.timezone is not None:
+        profile.timezone = request.timezone
+        updated_fields.append("timezone")
+
+    audit = AuditLog(
+        id=uuid.uuid4(),
+        user_id=profile.id,
+        action="preferences_updated",
+        resource_type="user_preferences",
+        resource_id=str(pref.id),
+        details={"updated_fields": updated_fields},
+        created_at=datetime.now(UTC),
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(pref)
+    await db.refresh(profile)
+
+    return PreferencesResponse(
+        work_start_time=pref.work_start_time,
+        work_end_time=pref.work_end_time,
+        buffer_minutes=pref.buffer_minutes,
+        default_task_duration=pref.default_task_duration,
+        max_focus_hours_per_day=pref.max_focus_hours_per_day,
+        available_days=pref.available_days,
+        auto_schedule_breaks=pref.auto_schedule_breaks,
+        timezone=profile.timezone,
     )

@@ -90,6 +90,10 @@ async def list_tasks(
         bool,
         Query(description="Whether to list archived tasks (defaults to false for active tasks)"),
     ] = False,
+    is_overdue: Annotated[
+        bool | None,
+        Query(description="Filter tasks that are overdue (true) or upcoming (false)"),
+    ] = None,
     sort_by: Annotated[
         TaskSortBy,
         Query(description="Field to sort by"),
@@ -118,6 +122,7 @@ async def list_tasks(
         due_before=due_before,
         due_after=due_after,
         is_archived=is_archived,
+        is_overdue=is_overdue,
         sort_by=sort_by,
         sort_order=sort_order,
         limit=limit,

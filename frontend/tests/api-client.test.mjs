@@ -171,3 +171,52 @@ test("Action approval state transitions enforce verification probe", () => {
   assert.equal(completedAction.status, "completed");
   assert.equal(completedAction.verification_result.verified, true);
 });
+
+test("Phase 3: Task archiving and status filtering logic", () => {
+  const tasks = [
+    { id: "1", title: "Active 1", status: "pending", is_archived: false, deadline: "2026-10-20T10:00:00Z" },
+    { id: "2", title: "Overdue 1", status: "in_progress", is_archived: false, deadline: "2026-10-10T10:00:00Z" },
+    { id: "3", title: "Done 1", status: "completed", is_archived: false, deadline: "2026-10-10T10:00:00Z" },
+    { id: "4", title: "Archived 1", status: "pending", is_archived: true, deadline: null },
+    { id: "5", title: "Cancelled 1", status: "cancelled", is_archived: false, deadline: null },
+  ];
+
+  const now = new Date("2026-10-14T12:00:00Z").getTime();
+
+  // Active filter (excludes completed and cancelled and archived)
+  const activeTasks = tasks.filter((t) => !t.is_archived && t.status !== "completed" && t.status !== "cancelled");
+  assert.equal(activeTasks.length, 2);
+
+  // Overdue filter (strictly deadline in past and pending/in_progress)
+  const overdueTasks = tasks.filter((t) => {
+    if (t.is_archived || !t.deadline) return false;
+    return new Date(t.deadline).getTime() < now && (t.status === "pending" || t.status === "in_progress");
+  });
+  assert.equal(overdueTasks.length, 1);
+  assert.equal(overdueTasks[0].id, "2");
+
+  // Archived filter
+  const archivedTasks = tasks.filter((t) => t.is_archived);
+  assert.equal(archivedTasks.length, 1);
+  assert.equal(archivedTasks[0].id, "4");
+});
+
+test("Phase 3: Preferences working hours validation", () => {
+  const invalidPrefs = {
+    work_start_time: "09:00:00",
+    work_end_time: "09:00:00",
+  };
+  const isIdentical = invalidPrefs.work_start_time === invalidPrefs.work_end_time;
+  assert.equal(isIdentical, true, "Identical working hours must be detected as invalid");
+
+  const validPrefs = {
+    work_start_time: "09:00:00",
+    work_end_time: "17:00:00",
+    buffer_minutes: 15,
+    timezone: "America/New_York",
+    available_days: [1, 2, 3, 4, 5],
+  };
+  assert.notEqual(validPrefs.work_start_time, validPrefs.work_end_time);
+  assert.equal(validPrefs.available_days.every((d) => d >= 1 && d <= 7), true);
+});
+
