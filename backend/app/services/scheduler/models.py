@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TimeInterval(BaseModel):
@@ -114,12 +114,28 @@ class UnscheduledTaskInfo(BaseModel):
 
     task_id: uuid.UUID
     task_title: str
+    title: str = ""
     required_minutes: int
+    estimated_duration_minutes: int = 0
     priority: str
     deadline: datetime | None = None
     reason: str
-    max_available_gap_minutes: int
+    max_available_gap_minutes: int = 0
     suggested_actions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if not data.get("title") and data.get("task_title"):
+                data["title"] = data["task_title"]
+            elif not data.get("task_title") and data.get("title"):
+                data["task_title"] = data["title"]
+            if not data.get("estimated_duration_minutes") and data.get("required_minutes"):
+                data["estimated_duration_minutes"] = data["required_minutes"]
+            elif not data.get("required_minutes") and data.get("estimated_duration_minutes"):
+                data["required_minutes"] = data["estimated_duration_minutes"]
+        return data
 
 
 class ScheduleValidationResult(BaseModel):

@@ -109,7 +109,7 @@ export default function SchedulePage() {
   };
 
   const activeBlocks = proposal
-    ? proposal.scheduled_blocks
+    ? (proposal.scheduled_blocks || (proposal as any).blocks || [])
     : savedSchedule
     ? savedSchedule.blocks.map((b) => ({
         task_id: b.task_id,
@@ -296,9 +296,9 @@ export default function SchedulePage() {
                   key={i}
                   className="flex items-center justify-between rounded bg-zinc-800/40 p-2"
                 >
-                  <span className="font-medium text-white">{u.title}</span>
+                  <span className="font-medium text-white">{u.task_title || u.title || "Task"}</span>
                   <span className="text-[11px] text-zinc-400">
-                    {u.estimated_duration_minutes}m • Reason: {u.reason}
+                    {u.required_minutes ?? u.estimated_duration_minutes ?? 0}m • Reason: {u.reason}
                   </span>
                 </div>
               ))}

@@ -144,9 +144,11 @@ export interface ScheduleBlockProposal {
 
 export interface UnscheduledTask {
   task_id: string;
-  title: string;
-  estimated_duration_minutes: number;
-  priority: TaskPriority;
+  title?: string;
+  task_title?: string;
+  estimated_duration_minutes?: number;
+  required_minutes?: number;
+  priority?: TaskPriority | string;
   reason: string;
 }
 
