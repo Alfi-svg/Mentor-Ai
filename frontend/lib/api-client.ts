@@ -13,6 +13,7 @@ import {
   CalendarSyncResult,
   ConflictCheckResult,
   NotificationItem,
+  NotificationSettings,
   PlanConfirmPayload,
   PlanConfirmResponse,
   PlanProposalResponse,
@@ -520,6 +521,19 @@ export const apiClient = {
   }> {
     return request("/notifications/evaluate", {
       method: "POST",
+    });
+  },
+
+  async getNotificationPreferences(): Promise<NotificationSettings> {
+    return request<NotificationSettings>("/notifications/preferences");
+  },
+
+  async updateNotificationPreferences(
+    prefs: Partial<NotificationSettings>
+  ): Promise<NotificationSettings> {
+    return request<NotificationSettings>("/notifications/preferences", {
+      method: "PUT",
+      body: JSON.stringify(prefs),
     });
   },
 };

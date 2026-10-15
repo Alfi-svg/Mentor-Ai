@@ -72,6 +72,7 @@ export interface UserPreferences {
   allow_weekend_scheduling?: boolean;
   lunch_break_start?: string;
   lunch_break_duration_minutes?: number;
+  notification_settings?: NotificationSettings;
 }
 
 export interface User {
@@ -337,20 +338,56 @@ export interface ApiErrorEnvelope {
   timestamp?: string;
 }
 
-// -----------------------------------------------------------------------------
-// Notifications
-// -----------------------------------------------------------------------------
+export type NotificationType =
+  | "due_soon"
+  | "due_now"
+  | "overdue"
+  | "upcoming_task"
+  | "schedule_conflict"
+  | "calendar_revoked"
+  | "calendar_stale"
+  | "action_required"
+  | "action_failed"
+  | "task_completed";
+
+export type NotificationChannel = "in_app" | "email" | "browser_push";
+export type NotificationDeliveryStatus =
+  | "pending"
+  | "processing"
+  | "delivered"
+  | "failed"
+  | "cancelled"
+  | "permanently_failed";
+
+export interface NotificationSettings {
+  notify_upcoming_tasks: boolean;
+  notify_deadlines: boolean;
+  notify_overdue: boolean;
+  notify_schedule_conflicts: boolean;
+  notify_action_requests: boolean;
+  notify_task_completed: boolean;
+  reminder_lead_time_minutes: number;
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string | null;
+  quiet_hours_end: string | null;
+}
 
 export interface NotificationItem {
   id: string;
   user_id: string;
   task_id: string | null;
-  notification_type: "due_soon" | "due_now" | "overdue";
+  action_id?: string | null;
+  notification_type: NotificationType;
+  channel?: NotificationChannel;
+  status?: NotificationDeliveryStatus;
   title: string;
   message: string;
   scheduled_for: string;
   delivered_at: string | null;
   read_at: string | null;
   is_read: boolean;
+  attempt_count?: number;
+  deduplication_key?: string | null;
+  payload?: Record<string, unknown> | null;
   created_at: string;
 }

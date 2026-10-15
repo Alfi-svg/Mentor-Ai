@@ -45,6 +45,7 @@ class PreferencesResponse(BaseModel):
     available_days: list[int]
     auto_schedule_breaks: bool
     timezone: str = "UTC"
+    notification_settings: dict | None = None
 
 
 class UserProfileResponse(BaseModel):
@@ -68,6 +69,7 @@ class PreferencesUpdateRequest(BaseModel):
     available_days: list[int] | None = None
     auto_schedule_breaks: bool | None = None
     timezone: str | None = None
+    notification_settings: dict | None = None
 
     @field_validator("timezone")
     @classmethod
@@ -277,6 +279,7 @@ async def get_preferences(
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
         timezone=profile.timezone,
+        notification_settings=pref.notification_settings,
     )
 
 
@@ -345,6 +348,9 @@ async def update_preferences(
     if request.timezone is not None:
         profile.timezone = request.timezone
         updated_fields.append("timezone")
+    if request.notification_settings is not None:
+        pref.notification_settings = request.notification_settings
+        updated_fields.append("notification_settings")
 
     audit = AuditLog(
         id=uuid.uuid4(),
@@ -370,4 +376,5 @@ async def update_preferences(
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
         timezone=profile.timezone,
+        notification_settings=pref.notification_settings,
     )

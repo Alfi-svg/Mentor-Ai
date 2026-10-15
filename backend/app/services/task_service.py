@@ -20,6 +20,7 @@ from app.schemas.task import (
     TaskStatus,
     TaskUpdateRequest,
 )
+from app.services.notification_service import NotificationService
 
 logger = get_logger("mentor_ai.task_service")
 
@@ -93,6 +94,11 @@ class TaskService:
         db.add(audit_entry)
         await db.commit()
         await db.refresh(task)
+
+        if task.deadline:
+            await NotificationService.reconcile_task_lifecycle(
+                db=db, user_id=user_id, task=task, event="task_deadline_changed"
+            )
 
         logger.info(
             "Task created",
@@ -262,6 +268,15 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
 
+        if "status" in updates and updates["status"] in ("completed", "cancelled"):
+            await NotificationService.reconcile_task_lifecycle(
+                db=db, user_id=user_id, task=task, event=f"task_{updates['status']}"
+            )
+        elif "deadline" in updates:
+            await NotificationService.reconcile_task_lifecycle(
+                db=db, user_id=user_id, task=task, event="task_deadline_changed"
+            )
+
         logger.info(
             "Task updated", task_id=str(task.id), user_id=str(user_id), fields=list(updates.keys())
         )
@@ -334,6 +349,10 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
 
+        await NotificationService.reconcile_task_lifecycle(
+            db=db, user_id=user_id, task=task, event="task_completed"
+        )
+
         logger.info("Task marked completed", task_id=str(task.id), user_id=str(user_id))
         return task
 
@@ -377,6 +396,10 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
 
+        await NotificationService.reconcile_task_lifecycle(
+            db=db, user_id=user_id, task=task, event="task_reopened"
+        )
+
         logger.info(
             "Task reopened", task_id=str(task.id), user_id=str(user_id), from_status=previous_status
         )
@@ -410,6 +433,11 @@ class TaskService:
         db.add(audit_entry)
         await db.commit()
         await db.refresh(task)
+
+        event_name = "task_archived" if is_archived else "task_reopened"
+        await NotificationService.reconcile_task_lifecycle(
+            db=db, user_id=user_id, task=task, event=event_name
+        )
 
         logger.info(action_name, task_id=str(task.id), user_id=str(user_id))
         return task

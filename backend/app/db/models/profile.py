@@ -95,6 +95,22 @@ class UserPreferences(Base):
         JSON, nullable=False, default=lambda: [1, 2, 3, 4, 5]
     )
     auto_schedule_breaks: Mapped[bool] = mapped_column(nullable=False, default=True)
+    notification_settings: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        default=lambda: {
+            "notify_upcoming_tasks": True,
+            "notify_deadlines": True,
+            "notify_overdue": True,
+            "notify_schedule_conflicts": True,
+            "notify_action_requests": True,
+            "notify_task_completed": False,
+            "reminder_lead_time_minutes": 30,
+            "quiet_hours_enabled": False,
+            "quiet_hours_start": "22:00:00",
+            "quiet_hours_end": "08:00:00",
+        },
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

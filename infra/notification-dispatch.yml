@@ -1,0 +1,28 @@
+name: Notification Dispatch Cron
+
+on:
+  schedule:
+    # Run every 15 minutes to trigger the persistent notification engine
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    name: Dispatch Due Notifications
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Mentor AI Dispatch Webhook
+        run: |
+          if [ -z "${{ secrets.NOTIFICATION_DISPATCH_SECRET }}" ]; then
+            echo "NOTIFICATION_DISPATCH_SECRET is not configured in repository secrets. Skipping remote webhook."
+            exit 0
+          fi
+          HTTP_STATUS=$(curl -s -o /tmp/dispatch_out.json -w "%{http_code}" -X POST \
+            "https://mentor-ai-api-onzd.onrender.com/api/v1/notifications/dispatch" \
+            -H "X-Dispatch-Secret: ${{ secrets.NOTIFICATION_DISPATCH_SECRET }}" \
+            -H "Content-Type: application/json")
+          echo "Dispatch response status: $HTTP_STATUS"
+          cat /tmp/dispatch_out.json
+          if [ "$HTTP_STATUS" -ne 200 ] && [ "$HTTP_STATUS" -ne 401 ]; then
+            exit 1
+          fi

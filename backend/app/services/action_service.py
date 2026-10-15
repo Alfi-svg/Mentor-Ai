@@ -76,6 +76,11 @@ class ActionService:
         db.add(audit)
         await db.commit()
         await db.refresh(action)
+
+        from app.services.notification_service import NotificationService
+        await NotificationService.reconcile_action_lifecycle(
+            db=db, user_id=user_id, action=action, event="action_staged"
+        )
         return action
 
     @staticmethod
@@ -126,6 +131,12 @@ class ActionService:
             )
             db.add(audit)
             await db.commit()
+
+            from app.services.notification_service import NotificationService
+            await NotificationService.reconcile_action_lifecycle(
+                db=db, user_id=user_id, action=action, event="action_rejected"
+            )
+
             return ActionConfirmResponse(
                 action_id=action.id,
                 status="rejected",
@@ -217,6 +228,12 @@ class ActionService:
         )
         db.add(audit)
         await db.commit()
+
+        from app.services.notification_service import NotificationService
+        action_event = "action_confirmed" if action.status == "completed" else "action_failed"
+        await NotificationService.reconcile_action_lifecycle(
+            db=db, user_id=user_id, action=action, event=action_event
+        )
 
         return ActionConfirmResponse(
             action_id=action.id,

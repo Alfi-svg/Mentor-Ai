@@ -1,11 +1,23 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Bell, Check, CheckCheck, Clock, ExternalLink } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  AlertTriangle,
+  Bell,
+  Calendar,
+  Check,
+  CheckCheck,
+  Clock,
+  ExternalLink,
+  Settings,
+  Sparkles,
+} from "lucide-react";
 import { apiClient } from "@/lib/api-client";
-import { NotificationItem } from "@/lib/types";
+import { NotificationItem, NotificationType } from "@/lib/types";
 
 export function NotificationBell() {
+  const router = useRouter();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState<number>(0);
   const [isOpen, setIsOpen] = useState<boolean>(false);
@@ -14,7 +26,7 @@ export function NotificationBell() {
 
   const fetchNotifications = async () => {
     try {
-      // First trigger evaluate to ensure all pending deadlines are caught
+      // Trigger deadline evaluation opportunistically on fetch
       await apiClient.evaluateNotifications().catch(() => {});
       const list = await apiClient.getNotifications(false);
       setNotifications(list);
@@ -67,6 +79,29 @@ export function NotificationBell() {
     }
   };
 
+  const handleItemClick = async (notif: NotificationItem) => {
+    // Mark as read
+    if (!notif.is_read) {
+      apiClient.markNotificationRead(notif.id).catch(() => {});
+      setNotifications((prev) =>
+        prev.map((n) => (n.id === notif.id ? { ...n, is_read: true } : n))
+      );
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+    }
+    setIsOpen(false);
+
+    // Route to appropriate destination
+    if (notif.action_id || notif.notification_type === "action_required" || notif.notification_type === "action_failed") {
+      router.push("/actions");
+    } else if (notif.notification_type === "schedule_conflict") {
+      router.push("/schedule");
+    } else if (notif.notification_type === "calendar_revoked" || notif.notification_type === "calendar_stale") {
+      router.push("/settings/calendar");
+    } else {
+      router.push("/tasks");
+    }
+  };
+
   const formatScheduledTime = (timeStr: string) => {
     try {
       return new Date(timeStr).toLocaleTimeString([], {
@@ -75,6 +110,62 @@ export function NotificationBell() {
       });
     } catch {
       return timeStr;
+    }
+  };
+
+  const getNotificationIcon = (type: NotificationType) => {
+    switch (type) {
+      case "overdue":
+        return (
+          <div className="rounded-full bg-rose-500/10 p-1.5 text-rose-400 border border-rose-500/20">
+            <AlertTriangle className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "due_now":
+        return (
+          <div className="rounded-full bg-amber-500/10 p-1.5 text-amber-400 border border-amber-500/20">
+            <Clock className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "action_required":
+        return (
+          <div className="rounded-full bg-purple-500/10 p-1.5 text-purple-400 border border-purple-500/20">
+            <Sparkles className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "action_failed":
+        return (
+          <div className="rounded-full bg-rose-500/10 p-1.5 text-rose-400 border border-rose-500/20">
+            <AlertTriangle className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "schedule_conflict":
+        return (
+          <div className="rounded-full bg-orange-500/10 p-1.5 text-orange-400 border border-orange-500/20">
+            <AlertTriangle className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "calendar_revoked":
+      case "calendar_stale":
+        return (
+          <div className="rounded-full bg-amber-500/10 p-1.5 text-amber-400 border border-amber-500/20">
+            <Calendar className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "task_completed":
+        return (
+          <div className="rounded-full bg-emerald-500/10 p-1.5 text-emerald-400 border border-emerald-500/20">
+            <Check className="h-3.5 w-3.5" />
+          </div>
+        );
+      case "upcoming_task":
+      case "due_soon":
+      default:
+        return (
+          <div className="rounded-full bg-sky-500/10 p-1.5 text-sky-400 border border-sky-500/20">
+            <Clock className="h-3.5 w-3.5" />
+          </div>
+        );
     }
   };
 
@@ -106,17 +197,30 @@ export function NotificationBell() {
                 </span>
               )}
             </div>
-            {unreadCount > 0 && (
+            <div className="flex items-center gap-3">
+              {unreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleMarkAllRead}
+                  disabled={loading}
+                  className="flex items-center gap-1 text-[11px] font-medium text-brand-400 hover:text-brand-300 transition-colors"
+                >
+                  <CheckCheck className="h-3 w-3" />
+                  <span>Mark all read</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={handleMarkAllRead}
-                disabled={loading}
-                className="flex items-center gap-1 text-[11px] font-medium text-brand-400 hover:text-brand-300 transition-colors"
+                onClick={() => {
+                  setIsOpen(false);
+                  router.push("/settings/preferences");
+                }}
+                title="Notification preferences"
+                className="text-zinc-500 hover:text-zinc-300 transition-colors"
               >
-                <CheckCheck className="h-3 w-3" />
-                <span>Mark all read</span>
+                <Settings className="h-3.5 w-3.5" />
               </button>
-            )}
+            </div>
           </div>
 
           {/* List */}
@@ -128,32 +232,18 @@ export function NotificationBell() {
               </div>
             ) : (
               notifications.map((notif) => {
-                const isOverdue = notif.notification_type === "overdue";
-                const isDueNow = notif.notification_type === "due_now";
-
                 return (
                   <div
                     key={notif.id}
-                    className={`p-3.5 flex items-start gap-3 transition-colors ${
+                    onClick={() => handleItemClick(notif)}
+                    className={`p-3.5 flex items-start gap-3 transition-colors cursor-pointer hover:bg-zinc-800/50 ${
                       notif.is_read
                         ? "bg-zinc-900/40 text-zinc-400"
                         : "bg-zinc-800/40 text-zinc-100"
                     }`}
                   >
                     <div className="mt-0.5 shrink-0">
-                      {isOverdue ? (
-                        <div className="rounded-full bg-rose-500/10 p-1 text-rose-400 border border-rose-500/20">
-                          <AlertTriangle className="h-3.5 w-3.5" />
-                        </div>
-                      ) : isDueNow ? (
-                        <div className="rounded-full bg-amber-500/10 p-1 text-amber-400 border border-amber-500/20">
-                          <Clock className="h-3.5 w-3.5" />
-                        </div>
-                      ) : (
-                        <div className="rounded-full bg-sky-500/10 p-1 text-sky-400 border border-sky-500/20">
-                          <Clock className="h-3.5 w-3.5" />
-                        </div>
-                      )}
+                      {getNotificationIcon(notif.notification_type)}
                     </div>
 
                     <div className="flex-1 space-y-1 overflow-hidden">
@@ -165,9 +255,14 @@ export function NotificationBell() {
                           {formatScheduledTime(notif.scheduled_for)}
                         </span>
                       </div>
-                      <p className="text-[11px] text-zinc-300 leading-snug">
+                      <p className="text-[11px] text-zinc-300 leading-snug line-clamp-2">
                         {notif.message}
                       </p>
+                      {notif.channel && notif.channel !== "in_app" && (
+                        <span className="inline-block text-[9px] font-mono text-zinc-400 uppercase bg-zinc-800 px-1 py-0.2 rounded">
+                          {notif.channel}
+                        </span>
+                      )}
                     </div>
 
                     {!notif.is_read && (

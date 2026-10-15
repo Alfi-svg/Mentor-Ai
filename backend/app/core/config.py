@@ -67,6 +67,32 @@ class Settings(BaseSettings):
         default=10.0, description="Calendar provider HTTP timeout"
     )
 
+    # Persistent Notification Engine
+    NOTIFICATION_DISPATCH_SECRET: str = Field(
+        default="", description="Secret token for triggering secured notification dispatch"
+    )
+    NOTIFICATION_DEFAULT_LEAD_TIME_MINUTES: int = Field(
+        default=30, description="Default lead time in minutes before deadline"
+    )
+    NOTIFICATION_MAX_RETRY_ATTEMPTS: int = Field(
+        default=3, description="Maximum retry attempts for failed notifications"
+    )
+    NOTIFICATION_LEASE_DURATION_SECONDS: int = Field(
+        default=300, description="Worker claim lease duration in seconds"
+    )
+    NOTIFICATION_BASE_BACKOFF_SECONDS: int = Field(
+        default=60, description="Base exponential backoff seconds on delivery failure"
+    )
+
+    # Optional External Delivery Channels (SMTP / Push)
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_PRIVATE_KEY: str = ""
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
@@ -112,6 +138,21 @@ class Settings(BaseSettings):
             and self.GOOGLE_CLIENT_SECRET
             and "placeholder" not in self.GOOGLE_CLIENT_ID.lower()
         )
+
+    @property
+    def has_notification_dispatch_secret(self) -> bool:
+        """Check whether a notification dispatch secret is configured."""
+        return bool(self.NOTIFICATION_DISPATCH_SECRET)
+
+    @property
+    def has_email_credentials(self) -> bool:
+        """Check whether SMTP email credentials are configured."""
+        return bool(self.SMTP_HOST and self.SMTP_FROM_EMAIL)
+
+    @property
+    def has_push_credentials(self) -> bool:
+        """Check whether browser push VAPID credentials are configured."""
+        return bool(self.VAPID_PUBLIC_KEY and self.VAPID_PRIVATE_KEY)
 
 
 # Singleton settings instance

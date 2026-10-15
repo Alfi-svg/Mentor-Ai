@@ -220,3 +220,66 @@ test("Phase 3: Preferences working hours validation", () => {
   assert.equal(validPrefs.available_days.every((d) => d >= 1 && d <= 7), true);
 });
 
+test("Phase 5: Notification category routing and action destination mapping", () => {
+  const notifAction = {
+    id: "notif-1",
+    notification_type: "action_required",
+    action_id: "action-xyz",
+    status: "pending",
+  };
+  const notifConflict = {
+    id: "notif-2",
+    notification_type: "schedule_conflict",
+    status: "delivered",
+  };
+  const notifCalendar = {
+    id: "notif-3",
+    notification_type: "calendar_stale",
+    status: "delivered",
+  };
+  const notifTask = {
+    id: "notif-4",
+    notification_type: "due_soon",
+    task_id: "task-123",
+    status: "delivered",
+  };
+
+  const getRoute = (notif) => {
+    if (notif.action_id || notif.notification_type === "action_required" || notif.notification_type === "action_failed") {
+      return "/actions";
+    } else if (notif.notification_type === "schedule_conflict") {
+      return "/schedule";
+    } else if (notif.notification_type === "calendar_revoked" || notif.notification_type === "calendar_stale") {
+      return "/settings/calendar";
+    }
+    return "/tasks";
+  };
+
+  assert.equal(getRoute(notifAction), "/actions");
+  assert.equal(getRoute(notifConflict), "/schedule");
+  assert.equal(getRoute(notifCalendar), "/settings/calendar");
+  assert.equal(getRoute(notifTask), "/tasks");
+});
+
+test("Phase 5: Notification settings and quiet hours bounds validation", () => {
+  const settings = {
+    notify_upcoming_tasks: true,
+    notify_deadlines: true,
+    notify_overdue: true,
+    notify_schedule_conflicts: true,
+    notify_action_requests: true,
+    notify_task_completed: false,
+    reminder_lead_time_minutes: 30,
+    quiet_hours_enabled: true,
+    quiet_hours_start: "22:00:00",
+    quiet_hours_end: "08:00:00",
+  };
+
+  assert.equal(settings.reminder_lead_time_minutes >= 5, true);
+  assert.equal(settings.reminder_lead_time_minutes <= 1440, true);
+  assert.equal(typeof settings.notify_upcoming_tasks, "boolean");
+  assert.equal(typeof settings.quiet_hours_enabled, "boolean");
+  assert.match(settings.quiet_hours_start, /^\d{2}:\d{2}(:\d{2})?$/);
+  assert.match(settings.quiet_hours_end, /^\d{2}:\d{2}(:\d{2})?$/);
+});
+

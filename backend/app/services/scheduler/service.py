@@ -199,6 +199,22 @@ class SchedulerService:
                     "Synchronize calendar to ensure schedule accuracy."
                 )
 
+        if proposal.unscheduled_tasks or proposal.status == "infeasible":
+            from app.services.notification_service import NotificationService
+            await NotificationService.schedule_notification(
+                db=db,
+                user_id=user_id,
+                notification_type="schedule_conflict",
+                title=f"Schedule Conflict: {target_date.strftime('%b %d, %Y')}",
+                message=(
+                    f"Unable to fit {len(proposal.unscheduled_tasks)} task(s) into your working hours for "
+                    f"{target_date.strftime('%b %d, %Y')}. Review your schedule to resolve conflicts."
+                ),
+                scheduled_for=datetime.now(UTC),
+                deduplication_key=f"schedule_conflict:{user_id}:{target_date.isoformat()}",
+                payload={"target_date": target_date.isoformat(), "unscheduled_count": len(proposal.unscheduled_tasks)},
+            )
+
         logger.info(
             "Schedule proposal generated",
             user_id=str(user_id),
