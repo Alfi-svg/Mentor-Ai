@@ -13,6 +13,7 @@ from app.core.errors import AppException
 from app.core.logging import get_logger
 from app.db.models.action import AuditLog
 from app.db.models.calendar import CalendarEvent
+from app.db.models.connection import ExternalConnection
 from app.db.models.profile import Profile, UserPreferences
 from app.db.models.schedule import Schedule, ScheduleBlock
 from app.db.models.task import Task
@@ -169,6 +170,35 @@ class SchedulerService:
         )
 
         proposal = engine.generate_schedule()
+
+        # 6. Check external calendar connection status to report truthful calendar validation / staleness
+        conn_stmt = select(ExternalConnection).where(
+            ExternalConnection.user_id == user_id,
+            ExternalConnection.provider == "google_calendar",
+        )
+        conn_res = await db.execute(conn_stmt)
+        conn = conn_res.scalar_one_or_none()
+
+        if not conn or conn.status != "connected":
+            proposal.validation.warnings.append(
+                "External calendar is not connected; schedule does not reflect external Google Calendar events."
+            )
+        elif not conn.last_synced_at:
+            proposal.validation.warnings.append(
+                "Calendar has never been synchronized; external Google Calendar commitments may be missing."
+            )
+        else:
+            last_sync_utc = (
+                conn.last_synced_at
+                if conn.last_synced_at.tzinfo
+                else conn.last_synced_at.replace(tzinfo=UTC)
+            )
+            if (datetime.now(UTC) - last_sync_utc) > timedelta(hours=24):
+                proposal.validation.warnings.append(
+                    f"Calendar sync data may be stale (last synced: {last_sync_utc.strftime('%Y-%m-%d %H:%M UTC')}). "
+                    "Synchronize calendar to ensure schedule accuracy."
+                )
+
         logger.info(
             "Schedule proposal generated",
             user_id=str(user_id),

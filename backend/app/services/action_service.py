@@ -88,10 +88,14 @@ class ActionService:
         client_ip: str | None = None,
     ) -> ActionConfirmResponse:
         """Process human confirmation or rejection decision and execute verified mutations."""
+        # 1. Fetch action with row-level lock to prevent concurrent double execution
         stmt = select(ActionHistory).where(
             ActionHistory.id == action_id,
             ActionHistory.user_id == user_id,
         )
+        if db.bind and db.bind.dialect.name == "postgresql":
+            stmt = stmt.with_for_update()
+
         res = await db.execute(stmt)
         action = res.scalar_one_or_none()
         if not action:

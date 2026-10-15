@@ -353,6 +353,20 @@ class CalendarService:
                 }
             )
 
+        # Delete removed/cancelled events previously synced from Google Calendar in this time window
+        fetched_ext_ids = {ev.external_id for ev in normalized_events}
+        del_stmt = select(CalendarEvent).where(
+            CalendarEvent.user_id == user_id,
+            CalendarEvent.source == "google_calendar",
+            CalendarEvent.start_time < end_time,
+            CalendarEvent.end_time > start_time,
+        )
+        del_res = await db.execute(del_stmt)
+        existing_in_range = list(del_res.scalars().all())
+        for old_ev in existing_in_range:
+            if old_ev.external_id and old_ev.external_id not in fetched_ext_ids:
+                await db.delete(old_ev)
+
         now = datetime.now(UTC)
         conn.last_synced_at = now
         await db.commit()
@@ -378,6 +392,21 @@ class CalendarService:
         db: AsyncSession,
     ) -> tuple[CalendarEvent, bool]:
         """Create a calendar event; pushes to Google Calendar if connected and verifies with follow-up read."""
+        # Check if an identical event already exists to prevent duplicate creation on action retries
+        start_utc = event_data.start_time.astimezone(UTC)
+        end_utc = event_data.end_time.astimezone(UTC)
+        dup_stmt = select(CalendarEvent).where(
+            CalendarEvent.user_id == user_id,
+            CalendarEvent.title == event_data.title,
+            CalendarEvent.start_time == start_utc,
+            CalendarEvent.end_time == end_utc,
+        )
+        dup_res = await db.execute(dup_stmt)
+        dup_event = dup_res.scalar_one_or_none()
+        if dup_event:
+            logger.info("reconciled_existing_event_on_retry", event_id=str(dup_event.id))
+            return dup_event, (dup_event.source == "google_calendar")
+
         stmt = select(ExternalConnection).where(
             ExternalConnection.user_id == user_id,
             ExternalConnection.provider == "google_calendar",
@@ -410,8 +439,8 @@ class CalendarService:
             user_id=user_id,
             title=event_data.title,
             description=event_data.description,
-            start_time=event_data.start_time.astimezone(UTC),
-            end_time=event_data.end_time.astimezone(UTC),
+            start_time=start_utc,
+            end_time=end_utc,
             is_all_day=event_data.is_all_day,
             is_fixed=True,
             source="google_calendar" if pushed_to_remote else "internal",

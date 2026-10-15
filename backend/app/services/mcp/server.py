@@ -30,7 +30,40 @@ from app.services.task_service import TaskService
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
+import contextvars
+
 logger = get_logger("mentor_ai.mcp_server")
+
+# Context variable tracking the authenticated user ID for the current request
+authenticated_mcp_user: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "authenticated_mcp_user", default=None
+)
+
+
+def validate_mcp_user_authorization(requested_user_id: str) -> uuid.UUID:
+    """Validate requested user UUID against authenticated token context.
+
+    Ensures that an authenticated user cannot access or mutate another user's data.
+    """
+    try:
+        req_uid = uuid.UUID(requested_user_id)
+    except (ValueError, TypeError) as exc:
+        raise AppException(
+            detail=f"Invalid user_id: '{requested_user_id}'. Must be a valid UUID.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="INVALID_USER_ID",
+        ) from exc
+
+    auth_uid = authenticated_mcp_user.get()
+    if auth_uid is not None:
+        if str(req_uid) != str(auth_uid):
+            raise AppException(
+                detail=f"Forbidden: Authenticated user '{auth_uid}' is not authorized to access resources for user '{requested_user_id}'.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                error_code="FORBIDDEN_USER_ACCESS",
+            )
+    return req_uid
+
 
 # Create singleton MCPServer instance
 mcp_server = MCPServer(
@@ -50,7 +83,7 @@ async def get_user_context(user_id: str) -> dict[str, Any]:
     Args:
         user_id: UUID of the authenticated user.
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     async with get_db_context() as db:
         profile_res = await db.execute(select(Profile).where(Profile.id == uid))
         profile = profile_res.scalar_one_or_none()
@@ -98,7 +131,7 @@ async def list_tasks(
         priority: Filter by priority level ('P1', 'P2', 'P3', 'P4').
         limit: Maximum number of tasks to return (default: 20, max: 50).
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     safe_limit = max(1, min(limit, 50))
     async with get_db_context() as db:
         items, total = await TaskService.list_tasks(
@@ -137,7 +170,7 @@ async def create_task(
         deadline: Optional ISO-8601 deadline timestamp.
         description: Optional task notes.
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     deadline_dt = datetime.fromisoformat(deadline) if deadline else None
 
     payload = TaskCreateRequest(
@@ -180,7 +213,7 @@ async def update_task(
         duration_minutes: Updated duration in minutes (1-720).
         priority: Updated priority ('P1', 'P2', 'P3', 'P4').
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     tid = uuid.UUID(task_id)
 
     update_kwargs: dict[str, Any] = {}
@@ -220,7 +253,7 @@ async def get_calendar_events(
         start_time: Window start timestamp (ISO-8601).
         end_time: Window end timestamp (ISO-8601).
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     s_dt = datetime.fromisoformat(start_time)
     e_dt = datetime.fromisoformat(end_time)
 
@@ -278,7 +311,7 @@ async def create_calendar_event(
         location: Optional location or meeting URL.
         idempotency_key: Optional UUID to prevent duplicate action submissions.
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
 
     # Validate timestamps
     s_dt = datetime.fromisoformat(start_time)
@@ -337,7 +370,7 @@ async def generate_schedule(
         task_ids: Optional list of task UUIDs to schedule.
         enforce_buffer: Whether to insert configured meeting buffers.
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     t_date = date.fromisoformat(target_date)
     parsed_task_ids = [uuid.UUID(tid) for tid in task_ids] if task_ids else None
 
@@ -368,7 +401,7 @@ async def verify_action(
         user_id: UUID of the authenticated user.
         action_id: UUID of the action record.
     """
-    uid = uuid.UUID(user_id)
+    uid = validate_mcp_user_authorization(user_id)
     aid = uuid.UUID(action_id)
 
     async with get_db_context() as db:
@@ -407,13 +440,20 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 )
             try:
                 payload = verify_token_claims(token)
-                request.state.user_id = payload.get("sub")
+                sub_id = payload.get("sub")
+                request.state.user_id = sub_id
+                reset_token = authenticated_mcp_user.set(str(sub_id) if sub_id else None)
             except Exception as exc:
                 return Response(
                     content=f'{{"error": "Unauthorized: Invalid JWT token ({exc})"}}',
                     status_code=401,
                     media_type="application/json",
                 )
+
+            try:
+                return await call_next(request)
+            finally:
+                authenticated_mcp_user.reset(reset_token)
 
         return await call_next(request)
 
