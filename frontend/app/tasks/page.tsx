@@ -14,6 +14,7 @@ import {
   Flame,
   Link as LinkIcon,
   Plus,
+  RefreshCw,
   RotateCcw,
   Search,
   Sparkles,
@@ -57,7 +58,19 @@ export default function TasksPage() {
   const [createScheduledEnd, setCreateScheduledEnd] = useState("");
   const [createTags, setCreateTags] = useState("");
   const [createDependsOn, setCreateDependsOn] = useState<string>("");
+  const [createSchedulingMode, setCreateSchedulingMode] = useState<"auto" | "manual" | "unscheduled">("auto");
   const [createLoading, setCreateLoading] = useState(false);
+
+  // User Feedback Toast
+  const [successFeedback, setSuccessFeedback] = useState<string | null>(null);
+  const [autoSchedulingId, setAutoSchedulingId] = useState<string | null>(null);
+  const [syncingTaskId, setSyncingTaskId] = useState<string | null>(null);
+
+  // Quick Schedule Modal State
+  const [schedulingTask, setSchedulingTask] = useState<Task | null>(null);
+  const [quickStart, setQuickStart] = useState("");
+  const [quickEnd, setQuickEnd] = useState("");
+  const [quickLoading, setQuickLoading] = useState(false);
 
   // Edit Modal State
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -174,10 +187,17 @@ export default function TasksPage() {
         priority: createPriority,
         energy_level: createEnergy,
         deadline: createDeadline ? new Date(createDeadline).toISOString() : null,
-        scheduled_start: createScheduledStart ? new Date(createScheduledStart).toISOString() : null,
-        scheduled_end: createScheduledEnd ? new Date(createScheduledEnd).toISOString() : null,
+        scheduled_start:
+          createSchedulingMode === "manual" && createScheduledStart
+            ? new Date(createScheduledStart).toISOString()
+            : null,
+        scheduled_end:
+          createSchedulingMode === "manual" && createScheduledEnd
+            ? new Date(createScheduledEnd).toISOString()
+            : null,
         tags: parsedTags,
         constraints,
+        scheduling_preference: createSchedulingMode,
       };
 
       const created = await apiClient.createTask(payload);
@@ -195,6 +215,22 @@ export default function TasksPage() {
       setCreateScheduledEnd("");
       setCreateTags("");
       setCreateDependsOn("");
+      setCreateSchedulingMode("auto");
+
+      // Truthful user feedback
+      if (created.scheduled_start) {
+        setSuccessFeedback(
+          `Task "${created.title}" created and scheduled for ${new Date(created.scheduled_start).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.`
+        );
+      } else if (createSchedulingMode === "auto") {
+        setSuccessFeedback(
+          `Task "${created.title}" created, but no open slot could be found before your deadline. It has been added to your backlog as unscheduled.`
+        );
+      } else {
+        setSuccessFeedback(
+          `Task "${created.title}" created and added to backlog as unscheduled.`
+        );
+      }
     } catch (err) {
       if (err instanceof ApiClientError) {
         setError(err.message);
@@ -203,6 +239,71 @@ export default function TasksPage() {
       }
     } finally {
       setCreateLoading(false);
+    }
+  };
+
+  const handleAutoSchedule = async (task: Task) => {
+    setAutoSchedulingId(task.id);
+    setError(null);
+    try {
+      const res = await apiClient.autoScheduleTask(task.id);
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? res.task : t)));
+      if (res.scheduled) {
+        setSuccessFeedback(res.message);
+      } else {
+        setError(res.message);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to auto-schedule task.");
+    } finally {
+      setAutoSchedulingId(null);
+    }
+  };
+
+  const handleRetrySync = async (task: Task) => {
+    setSyncingTaskId(task.id);
+    setError(null);
+    try {
+      const updated = await apiClient.syncTaskCalendar(task.id);
+      setTasks((prev) => prev.map((t) => (t.id === task.id ? updated : t)));
+      setSuccessFeedback(`Task "${task.title}" synced to Google Calendar.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync task to Google Calendar.");
+    } finally {
+      setSyncingTaskId(null);
+    }
+  };
+
+  const openQuickScheduleModal = (task: Task) => {
+    setSchedulingTask(task);
+    const now = new Date();
+    now.setHours(now.getHours() + 1, 0, 0, 0);
+    const startStr = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    const end = new Date(now.getTime() + (task.duration_minutes || 45) * 60000);
+    const endStr = new Date(end.getTime() - end.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+    setQuickStart(startStr);
+    setQuickEnd(endStr);
+  };
+
+  const handleQuickScheduleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!schedulingTask || !quickStart || !quickEnd) return;
+    setQuickLoading(true);
+    setError(null);
+    try {
+      const updated = await apiClient.updateTask(schedulingTask.id, {
+        scheduled_start: new Date(quickStart).toISOString(),
+        scheduled_end: new Date(quickEnd).toISOString(),
+      });
+      setTasks((prev) => prev.map((t) => (t.id === schedulingTask.id ? updated : t)));
+      setSuccessFeedback(
+        `Task "${schedulingTask.title}" scheduled for ${new Date(quickStart).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}.`
+      );
+      setSchedulingTask(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to schedule task.");
+    } finally {
+      setQuickLoading(false);
     }
   };
 
@@ -340,6 +441,20 @@ export default function TasksPage() {
           </div>
         )}
 
+        {/* Global Success Notice */}
+        {successFeedback && (
+          <div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+            <span>{successFeedback}</span>
+            <button
+              onClick={() => setSuccessFeedback(null)}
+              className="ml-auto text-emerald-400 hover:text-emerald-200"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Tabs Bar */}
         <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 pb-2">
           {(
@@ -471,47 +586,110 @@ export default function TasksPage() {
                       )}
 
                       {/* Metadata Row */}
-                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-500 pt-0.5">
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
+                      <div className="flex flex-wrap items-center gap-2.5 text-[11px] pt-1">
+                        <span className="flex items-center gap-1 text-zinc-400">
+                          <Clock className="h-3 w-3 text-zinc-500" />
                           {task.duration_minutes ?? task.estimated_duration_minutes ?? 45} mins
                         </span>
 
-                        {task.deadline && (
-                          <span className={`flex items-center gap-1 ${isOverdue ? "text-rose-400 font-semibold" : ""}`}>
-                            <Calendar className="h-3 w-3" />
+                        {/* Distinct Deadline Indicator */}
+                        {task.deadline ? (
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium border ${
+                              isOverdue
+                                ? "bg-rose-500/10 text-rose-400 border-rose-500/25 font-semibold"
+                                : "bg-zinc-800/80 text-zinc-300 border-zinc-700/60"
+                            }`}
+                          >
+                            <Calendar className="h-3 w-3 text-zinc-400" />
                             Due: {new Date(task.deadline).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
                           </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-zinc-500 bg-zinc-800/40 border border-zinc-800">
+                            <Calendar className="h-3 w-3 text-zinc-600" />
+                            No deadline
+                          </span>
                         )}
 
-                        {task.scheduled_start && (
-                          <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                        {/* Distinct Scheduled Time Indicator */}
+                        {task.scheduled_start && task.scheduled_end ? (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                             <Clock className="h-3 w-3 text-emerald-400" />
-                            Scheduled: {new Date(task.scheduled_start).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                            Scheduled: {new Date(task.scheduled_start).toLocaleDateString([], { month: "short", day: "numeric" })}{" "}
+                            {new Date(task.scheduled_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} –{" "}
+                            {new Date(task.scheduled_end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-zinc-400 bg-zinc-800/40 border border-zinc-800">
+                            <Clock className="h-3 w-3 text-zinc-500" />
+                            Unscheduled
                           </span>
                         )}
 
-                        {task.calendar_sync_status && (
-                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono border ${
-                            task.calendar_sync_status === "synced"
-                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                              : task.calendar_sync_status === "pending"
-                              ? "bg-sky-500/10 text-sky-400 border-sky-500/20"
-                              : task.calendar_sync_status === "failed"
-                              ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
-                              : "bg-zinc-800 text-zinc-400 border-zinc-700"
-                          }`}>
-                            <span className={`h-1.5 w-1.5 rounded-full ${
-                              task.calendar_sync_status === "synced" ? "bg-emerald-400" :
-                              task.calendar_sync_status === "pending" ? "bg-sky-400 animate-pulse" :
-                              task.calendar_sync_status === "failed" ? "bg-rose-400" : "bg-zinc-500"
-                            }`} />
-                            {task.calendar_sync_status}
+                        {/* Calendar Sync Status Badge */}
+                        {task.calendar_sync_status === "synced" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            <CheckCircle2 className="h-3 w-3 text-emerald-400" />
+                            Synced to Google Calendar
                           </span>
+                        ) : task.calendar_sync_status === "failed" ? (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                            title={task.calendar_sync_error || "Google Calendar sync failed"}
+                          >
+                            <AlertTriangle className="h-3 w-3 text-rose-400" />
+                            Sync failed
+                          </span>
+                        ) : task.calendar_sync_status === "pending" ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                            <RefreshCw className="h-3 w-3 animate-spin text-sky-400" />
+                            Syncing...
+                          </span>
+                        ) : task.scheduled_start ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700">
+                            <Calendar className="h-3 w-3 text-zinc-400" />
+                            Scheduled locally
+                          </span>
+                        ) : null}
+
+                        {/* Quick Inline Actions */}
+                        {!task.scheduled_start && task.status !== "completed" && task.status !== "cancelled" && (
+                          <button
+                            onClick={() => handleAutoSchedule(task)}
+                            disabled={autoSchedulingId === task.id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-brand-600/20 border border-brand-500/30 text-brand-300 hover:bg-brand-600/30 transition-colors disabled:opacity-50"
+                            title="Automatically find a slot within working hours before deadline"
+                          >
+                            <Sparkles className={`h-3 w-3 ${autoSchedulingId === task.id ? "animate-spin text-brand-400" : "text-brand-400"}`} />
+                            <span>{autoSchedulingId === task.id ? "Solving..." : "Find time (Auto)"}</span>
+                          </button>
+                        )}
+
+                        {!task.scheduled_start && task.status !== "completed" && task.status !== "cancelled" && (
+                          <button
+                            onClick={() => openQuickScheduleModal(task)}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+                            title="Manually choose execution time"
+                          >
+                            <Calendar className="h-3 w-3 text-zinc-400" />
+                            <span>Schedule</span>
+                          </button>
+                        )}
+
+                        {task.calendar_sync_status === "failed" && task.scheduled_start && (
+                          <button
+                            onClick={() => handleRetrySync(task)}
+                            disabled={syncingTaskId === task.id}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:bg-rose-500/30 transition-colors disabled:opacity-50"
+                            title={task.calendar_sync_error || "Retry synchronization to Google Calendar"}
+                          >
+                            <RotateCcw className={`h-3 w-3 ${syncingTaskId === task.id ? "animate-spin text-rose-400" : "text-rose-400"}`} />
+                            <span>Retry sync</span>
+                          </button>
                         )}
 
                         {task.energy_level && (
-                          <span className="flex items-center gap-1 text-zinc-400">
+                          <span className="flex items-center gap-1 text-zinc-400 text-[10px]">
                             <Zap className="h-3 w-3 text-amber-400" />
                             {task.energy_level.toUpperCase()}
                           </span>
@@ -733,27 +911,91 @@ export default function TasksPage() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-300">Optional Scheduled Start</label>
-                    <input
-                      type="datetime-local"
-                      value={createScheduledStart}
-                      onChange={(e) => setCreateScheduledStart(e.target.value)}
-                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
-                    />
-                  </div>
+                {/* Scheduling Preference */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-300">Scheduling Preference</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCreateSchedulingMode("auto")}
+                      className={`flex flex-col items-start p-2.5 rounded-lg border text-left transition-all ${
+                        createSchedulingMode === "auto"
+                          ? "border-brand-500 bg-brand-500/10 text-white shadow-sm"
+                          : "border-zinc-700/80 bg-zinc-800/60 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white mb-0.5">
+                        <Sparkles className="h-3.5 w-3.5 text-brand-400" />
+                        <span>Auto-Schedule</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-400 leading-tight">
+                        Finds best open slot before deadline
+                      </span>
+                    </button>
 
-                  <div className="space-y-1">
-                    <label className="text-xs font-semibold text-zinc-300">Optional Scheduled End</label>
-                    <input
-                      type="datetime-local"
-                      value={createScheduledEnd}
-                      onChange={(e) => setCreateScheduledEnd(e.target.value)}
-                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
-                    />
+                    <button
+                      type="button"
+                      onClick={() => setCreateSchedulingMode("manual")}
+                      className={`flex flex-col items-start p-2.5 rounded-lg border text-left transition-all ${
+                        createSchedulingMode === "manual"
+                          ? "border-brand-500 bg-brand-500/10 text-white shadow-sm"
+                          : "border-zinc-700/80 bg-zinc-800/60 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white mb-0.5">
+                        <Calendar className="h-3.5 w-3.5 text-blue-400" />
+                        <span>Choose Time</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-400 leading-tight">
+                        Designate specific start & end times
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setCreateSchedulingMode("unscheduled")}
+                      className={`flex flex-col items-start p-2.5 rounded-lg border text-left transition-all ${
+                        createSchedulingMode === "unscheduled"
+                          ? "border-brand-500 bg-brand-500/10 text-white shadow-sm"
+                          : "border-zinc-700/80 bg-zinc-800/60 text-zinc-400 hover:border-zinc-600 hover:text-zinc-200"
+                      }`}
+                    >
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-white mb-0.5">
+                        <Clock className="h-3.5 w-3.5 text-zinc-400" />
+                        <span>Unscheduled</span>
+                      </div>
+                      <span className="text-[11px] text-zinc-400 leading-tight">
+                        Add to backlog to schedule later
+                      </span>
+                    </button>
                   </div>
                 </div>
+
+                {createSchedulingMode === "manual" && (
+                  <div className="grid grid-cols-2 gap-3 p-3 rounded-lg border border-zinc-700/70 bg-zinc-900/60">
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-zinc-300">Scheduled Start</label>
+                      <input
+                        type="datetime-local"
+                        required={createSchedulingMode === "manual"}
+                        value={createScheduledStart}
+                        onChange={(e) => setCreateScheduledStart(e.target.value)}
+                        className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-zinc-300">Scheduled End</label>
+                      <input
+                        type="datetime-local"
+                        required={createSchedulingMode === "manual"}
+                        value={createScheduledEnd}
+                        onChange={(e) => setCreateScheduledEnd(e.target.value)}
+                        className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* Prerequisite Task Selection */}
                 {tasks.length > 0 && (
@@ -974,6 +1216,91 @@ export default function TasksPage() {
                     className="rounded-lg bg-brand-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-500 disabled:opacity-50"
                   >
                     {editLoading ? "Updating..." : "Save Changes"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Quick Schedule Modal */}
+        {schedulingTask && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-6 shadow-2xl">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <div className="rounded-lg bg-brand-500/10 p-2 text-brand-400">
+                    <Calendar className="h-5 w-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Schedule Task</h3>
+                    <p className="text-xs text-zinc-400 line-clamp-1">{schedulingTask.title}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSchedulingTask(null)}
+                  className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <form onSubmit={handleQuickScheduleSubmit} className="mt-4 space-y-4">
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-3 text-xs text-zinc-400">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-medium text-zinc-300">Estimated Duration:</span>
+                    <span className="text-zinc-200">{schedulingTask.duration_minutes || 45} mins</span>
+                  </div>
+                  {schedulingTask.deadline && (
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-zinc-300">Hard Deadline:</span>
+                      <span className="text-amber-400">
+                        {new Date(schedulingTask.deadline).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-zinc-300">Scheduled Start Time</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={quickStart}
+                    onChange={(e) => setQuickStart(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 text-xs text-white focus:border-brand-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold text-zinc-300">Scheduled End Time</label>
+                  <input
+                    type="datetime-local"
+                    required
+                    value={quickEnd}
+                    onChange={(e) => setQuickEnd(e.target.value)}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2.5 text-xs text-white focus:border-brand-500 focus:outline-none"
+                  />
+                </div>
+
+                <p className="text-[11px] text-zinc-400">
+                  Saving scheduled times will immediately reserve this block in your Mentor AI schedule and synchronize with Google Calendar if connected.
+                </p>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={() => setSchedulingTask(null)}
+                    className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={quickLoading}
+                    className="rounded-lg bg-brand-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-brand-500 disabled:opacity-50"
+                  >
+                    {quickLoading ? "Scheduling..." : "Save Schedule"}
                   </button>
                 </div>
               </form>

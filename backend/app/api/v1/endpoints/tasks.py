@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.schemas.task import (
     EnergyLevel,
     SortOrder,
+    TaskAutoScheduleResponse,
     TaskCreateRequest,
     TaskListResponse,
     TaskPriority,
@@ -295,5 +296,51 @@ async def unarchive_task(
         task_id=task_id,
         is_archived=False,
         client_ip=client_ip,
+    )
+    return TaskResponse.model_validate(task)
+
+
+@router.post(
+    "/{task_id}/auto-schedule",
+    response_model=TaskAutoScheduleResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Auto-schedule a task",
+    description="Deterministically allocates a working slot within available working hours before the deadline.",
+)
+async def auto_schedule_task_endpoint(
+    task_id: uuid.UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TaskAutoScheduleResponse:
+    """Find and allocate an open working slot for the specified task."""
+    task, success, message = await TaskService.auto_schedule_task(
+        db=db,
+        user_id=current_user.id,
+        task_id=task_id,
+    )
+    return TaskAutoScheduleResponse(
+        task=TaskResponse.model_validate(task),
+        scheduled=success,
+        message=message,
+    )
+
+
+@router.post(
+    "/{task_id}/sync-calendar",
+    response_model=TaskResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sync task to calendar",
+    description="Synchronizes or retries synchronization of a scheduled task to Google Calendar.",
+)
+async def sync_task_calendar_endpoint(
+    task_id: uuid.UUID,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TaskResponse:
+    """Synchronize a scheduled task to Google Calendar."""
+    task = await TaskService.sync_task_calendar(
+        db=db,
+        user_id=current_user.id,
+        task_id=task_id,
     )
     return TaskResponse.model_validate(task)

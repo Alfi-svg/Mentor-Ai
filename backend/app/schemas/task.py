@@ -98,6 +98,10 @@ class TaskCreateRequest(BaseModel):
         default="pending",
         description="Initial status",
     )
+    scheduling_preference: Literal["auto", "manual", "unscheduled"] | None = Field(
+        default=None,
+        description="Explicit scheduling preference: auto (solve slot), manual (use timestamps), or unscheduled (backlog only)",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -332,3 +336,11 @@ class TaskListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class TaskAutoScheduleResponse(BaseModel):
+    """Result of attempting auto-scheduling for a task."""
+
+    task: TaskResponse
+    scheduled: bool
+    message: str

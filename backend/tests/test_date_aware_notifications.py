@@ -573,6 +573,7 @@ async def test_deterministic_task_creation_and_calendar_sync(test_db):
                 duration_minutes=60,
                 priority="P2",
                 deadline=deadline_dt,
+                scheduling_preference="auto",
             ),
         )
 

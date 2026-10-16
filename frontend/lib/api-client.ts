@@ -20,6 +20,7 @@ import {
   SavedSchedule,
   ScheduleProposal,
   Task,
+  TaskAutoScheduleResult,
   TaskCreatePayload,
   TaskPriority,
   TaskStatus,
@@ -315,6 +316,23 @@ export const apiClient = {
 
   async unarchiveTask(id: string): Promise<Task> {
     const res = await request<Task>(`/tasks/${id}/unarchive`, { method: "POST" });
+    return normalizeTask(res);
+  },
+
+  async autoScheduleTask(id: string): Promise<TaskAutoScheduleResult> {
+    const res = await request<{ task: any; scheduled: boolean; message: string }>(
+      `/tasks/${id}/auto-schedule`,
+      { method: "POST" }
+    );
+    return {
+      task: normalizeTask(res.task),
+      scheduled: res.scheduled,
+      message: res.message,
+    };
+  },
+
+  async syncTaskCalendar(id: string): Promise<Task> {
+    const res = await request<Task>(`/tasks/${id}/sync-calendar`, { method: "POST" });
     return normalizeTask(res);
   },
 

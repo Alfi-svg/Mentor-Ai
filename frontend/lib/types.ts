@@ -52,6 +52,13 @@ export interface TaskCreatePayload {
   tags?: string[];
   constraints?: Record<string, any>;
   status?: TaskStatus;
+  scheduling_preference?: "auto" | "manual" | "unscheduled";
+}
+
+export interface TaskAutoScheduleResult {
+  task: Task;
+  scheduled: boolean;
+  message: string;
 }
 
 export interface TaskUpdatePayload {
@@ -126,6 +133,10 @@ export interface CalendarEvent {
   is_fixed: boolean;
   source: string;
   location: string | null;
+  task_id?: string | null;
+  priority?: string | null;
+  task_status?: string | null;
+  calendar_sync_status?: string | null;
 }
 
 export interface CalendarSyncResult {

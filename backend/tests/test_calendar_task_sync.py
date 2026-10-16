@@ -12,6 +12,7 @@ from app.db.base import Base
 from app.db.models.calendar import CalendarEvent
 from app.db.models.connection import ExternalConnection
 from app.db.models.profile import Profile, UserPreferences
+from app.db.models.schedule import Schedule, ScheduleBlock
 from app.db.models.task import Task
 from app.schemas.task import TaskCreateRequest, TaskUpdateRequest
 from app.services.calendar.mock import MockCalendarAdapter
@@ -300,3 +301,162 @@ async def test_calendar_sync_fault_tolerance(test_db):
     await test_db.refresh(task)
     assert task.calendar_sync_status == "synced"
     assert task.google_calendar_event_id is not None
+
+
+@pytest.mark.asyncio
+async def test_task_creation_unscheduled_with_deadline_remains_unscheduled(test_db):
+    """Creating a task with only a deadline and scheduling_preference='unscheduled' stays unscheduled."""
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=True)
+
+    now = datetime.now(UTC)
+    deadline_dt = now + timedelta(days=2)
+
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Term Paper Proposal",
+            duration_minutes=90,
+            priority="P1",
+            deadline=deadline_dt,
+            scheduling_preference="unscheduled",
+        ),
+    )
+
+    # Must stay cleanly unscheduled
+    assert task.scheduled_start is None
+    assert task.scheduled_end is None
+    assert task.calendar_sync_status == "unscheduled"
+    assert task.google_calendar_event_id is None
+    # Deadline must NOT be treated as start time
+    assert _norm_dt(task.deadline) == _norm_dt(deadline_dt)
+
+    # No schedule block should exist for an unscheduled task
+    block = await test_db.scalar(select(ScheduleBlock).where(ScheduleBlock.task_id == task.id))
+    assert block is None
+
+
+@pytest.mark.asyncio
+async def test_auto_schedule_task_finds_slot_and_syncs(test_db):
+    """auto_schedule_task allocates a working slot within working hours and synchronizes to calendar."""
+    mock_cal = MockCalendarAdapter()
+    CalendarService.set_provider_override(mock_cal)
+
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=True)
+
+    now = datetime.now(UTC)
+    deadline_dt = (now + timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
+
+    # 1. Create unscheduled task
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Algorithm Analysis Assignment",
+            duration_minutes=60,
+            priority="P2",
+            deadline=deadline_dt,
+            scheduling_preference="unscheduled",
+        ),
+    )
+    assert task.scheduled_start is None
+    assert task.calendar_sync_status == "unscheduled"
+
+    # 2. Trigger auto_schedule_task on-demand
+    scheduled_task, success, message = await TaskService.auto_schedule_task(
+        db=test_db, user_id=user_id, task_id=task.id
+    )
+
+    assert success is True
+    assert "successfully scheduled" in message.lower()
+    assert scheduled_task.scheduled_start is not None
+    assert scheduled_task.scheduled_end is not None
+    assert scheduled_task.calendar_sync_status == "synced"
+    assert scheduled_task.google_calendar_event_id is not None
+
+    # Google Calendar event was created
+    assert scheduled_task.google_calendar_event_id in mock_cal._events
+
+    # ScheduleBlock exists
+    block = await test_db.scalar(select(ScheduleBlock).where(ScheduleBlock.task_id == task.id))
+    assert block is not None
+    assert block.start_time == scheduled_task.scheduled_start
+
+
+@pytest.mark.asyncio
+async def test_task_deletion_cleans_up_calendar_event_and_schedule_block(test_db):
+    """Deleting a task deletes the remote Google Calendar event, local CalendarEvent, and ScheduleBlock."""
+    mock_cal = MockCalendarAdapter()
+    CalendarService.set_provider_override(mock_cal)
+
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=True)
+
+    now = datetime.now(UTC)
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Temporary Meeting Preparation",
+            duration_minutes=45,
+            scheduled_start=now + timedelta(hours=2),
+            scheduled_end=now + timedelta(hours=2, minutes=45),
+            scheduling_preference="manual",
+        ),
+    )
+
+    event_id = task.google_calendar_event_id
+    assert event_id is not None
+    assert event_id in mock_cal._events
+
+    # ScheduleBlock exists
+    block = await test_db.scalar(select(ScheduleBlock).where(ScheduleBlock.task_id == task.id))
+    assert block is not None
+
+    # Local CalendarEvent exists
+    local_ev = await test_db.scalar(select(CalendarEvent).where(CalendarEvent.external_id == event_id))
+    assert local_ev is not None
+
+    # Delete task
+    await TaskService.delete_task(db=test_db, user_id=user_id, task_id=task.id)
+
+    # Remote event was deleted from Google Calendar
+    assert event_id not in mock_cal._events
+
+    # Local CalendarEvent was deleted
+    local_ev_after = await test_db.scalar(select(CalendarEvent).where(CalendarEvent.external_id == event_id))
+    assert local_ev_after is None
+
+    # ScheduleBlock was deleted
+    block_after = await test_db.scalar(select(ScheduleBlock).where(ScheduleBlock.task_id == task.id))
+    assert block_after is None
+
+
+@pytest.mark.asyncio
+async def test_ensure_schedule_block_for_task_creates_and_links_schedule(test_db):
+    """ensure_schedule_block_for_task creates Schedule on the fly and upserts ScheduleBlock."""
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=False)
+
+    now = datetime.now(UTC)
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Self-Study Session",
+            duration_minutes=60,
+            scheduled_start=now + timedelta(hours=1),
+            scheduled_end=now + timedelta(hours=2),
+            scheduling_preference="manual",
+        ),
+    )
+
+    # ScheduleBlock must exist with source="task"
+    block = await test_db.scalar(select(ScheduleBlock).where(ScheduleBlock.task_id == task.id))
+    assert block is not None
+    assert block.title == "Self-Study Session"
+    assert block.block_type == "task"
+    assert block.is_completed is False
+
+    # Complete the task
+    await TaskService.complete_task(db=test_db, user_id=user_id, task_id=task.id)
+    await test_db.refresh(block)
+    assert block.is_completed is True

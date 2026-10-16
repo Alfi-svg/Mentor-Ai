@@ -4,13 +4,14 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.db.models.calendar import CalendarEvent
 from app.db.models.connection import ExternalConnection
 from app.db.models.profile import UserPreferences
+from app.db.models.schedule import Schedule, ScheduleBlock
 from app.db.models.task import Task
 from app.services.calendar.base import CalendarProviderException
 from app.services.calendar.models import (
@@ -58,16 +59,108 @@ class CalendarSyncService:
         return True, conn
 
     @classmethod
+    async def ensure_schedule_block_for_task(
+        cls, db: AsyncSession, task: Task, user_id: uuid.UUID
+    ) -> ScheduleBlock | None:
+        """Create, update, or remove ScheduleBlock corresponding to a task's designated window."""
+        # Find existing ScheduleBlock for this task
+        block_stmt = select(ScheduleBlock).where(
+            ScheduleBlock.task_id == task.id,
+            ScheduleBlock.user_id == user_id,
+        )
+        block_res = await db.execute(block_stmt)
+        existing_block = block_res.scalar_one_or_none()
+
+        # If task is archived, remove any existing ScheduleBlock
+        if task.is_archived:
+            if existing_block:
+                await db.delete(existing_block)
+            return None
+
+        # If task is cancelled, keep the schedule block but ensure is_completed is False
+        if task.status == "cancelled":
+            if existing_block:
+                existing_block.is_completed = False
+            return existing_block
+
+        # If task does not have explicit scheduled_start/end:
+        if not task.scheduled_start or not task.scheduled_end:
+            if existing_block:
+                # The task is scheduled via this existing schedule block
+                existing_block.is_completed = (task.status == "completed")
+                existing_block.title = task.title
+                # Sync back to task
+                task.scheduled_start = existing_block.start_time
+                task.scheduled_end = existing_block.end_time
+                return existing_block
+            return None
+
+        # Task has valid scheduled start & end
+        target_date = task.scheduled_start.date()
+
+        # Find or create an accepted Schedule container for target_date
+        sched_stmt = select(Schedule).where(
+            Schedule.user_id == user_id,
+            Schedule.schedule_date == target_date,
+            Schedule.status == "accepted",
+        )
+        sched_res = await db.execute(sched_stmt)
+        sched = sched_res.scalar_one_or_none()
+        if not sched:
+            sched = Schedule(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                schedule_date=target_date,
+                status="accepted",
+                metadata_json={"source": "task_scheduling"},
+                created_at=datetime.now(UTC),
+            )
+            db.add(sched)
+            await db.flush()
+
+        if existing_block:
+            existing_block.schedule_id = sched.id
+            existing_block.title = task.title
+            existing_block.start_time = task.scheduled_start
+            existing_block.end_time = task.scheduled_end
+            existing_block.is_completed = (task.status == "completed")
+            return existing_block
+        else:
+            new_block = ScheduleBlock(
+                id=uuid.uuid4(),
+                schedule_id=sched.id,
+                user_id=user_id,
+                task_id=task.id,
+                title=task.title,
+                start_time=task.scheduled_start,
+                end_time=task.scheduled_end,
+                block_type="task",
+                is_completed=(task.status == "completed"),
+            )
+            db.add(new_block)
+            return new_block
+
+    @classmethod
     async def sync_task_to_calendar(
         cls, db: AsyncSession, task: Task, user_id: uuid.UUID
     ) -> bool:
         """Idempotently create or update Google Calendar event for a scheduled task."""
+        # Ensure internal ScheduleBlock exists or is cleaned up
+        await cls.ensure_schedule_block_for_task(db=db, task=task, user_id=user_id)
+
         is_enabled, conn = await cls.is_sync_enabled_for_user(db, user_id)
         if not is_enabled or not conn:
             # Calendar not connected or sync disabled
-            if task.calendar_sync_status != "unsynced" and not task.google_calendar_event_id:
-                task.calendar_sync_status = "unsynced"
-                await db.commit()
+            if task.scheduled_start and task.scheduled_end:
+                if task.calendar_sync_status != "synced" and not task.google_calendar_event_id:
+                    task.calendar_sync_status = "unsynced"
+                    task.calendar_sync_error = None
+                    await db.commit()
+            else:
+                if task.calendar_sync_status != "unscheduled":
+                    task.calendar_sync_status = "unscheduled"
+                    task.calendar_sync_error = None
+                    await db.commit()
             return False
 
         # If task is archived or cancelled, remove remote calendar event if it exists
@@ -235,7 +328,6 @@ class CalendarSyncService:
                 meta = dict(conn.metadata_json or {})
                 meta["scope_insufficient"] = True
                 conn.metadata_json = meta
-                conn.scopes = [s for s in (conn.scopes or []) if "calendar" not in s]
             logger.error(
                 "Failed to sync task to Google Calendar",
                 task_id=str(task.id),

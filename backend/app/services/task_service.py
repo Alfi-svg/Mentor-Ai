@@ -58,6 +58,18 @@ class TaskService:
         client_ip: str | None = None,
     ) -> Task:
         """Create a new task and record an audit log entry in an atomic transaction."""
+        pref = payload.scheduling_preference
+
+        # Determine scheduled start and end
+        if (pref == "manual" or pref is None) and payload.scheduled_start and payload.scheduled_end:
+            init_start = payload.scheduled_start
+            init_end = payload.scheduled_end
+            init_status = "pending"
+        else:
+            init_start = None
+            init_end = None
+            init_status = "unscheduled"
+
         task = Task(
             id=uuid.uuid4(),
             user_id=user_id,
@@ -67,9 +79,9 @@ class TaskService:
             priority=payload.priority,
             duration_minutes=payload.duration_minutes,
             deadline=payload.deadline,
-            scheduled_start=payload.scheduled_start,
-            scheduled_end=payload.scheduled_end,
-            calendar_sync_status="pending" if payload.scheduled_start and payload.scheduled_end else "unsynced",
+            scheduled_start=init_start,
+            scheduled_end=init_end,
+            calendar_sync_status=init_status,
             energy_level=payload.energy_level,
             tags=payload.tags,
             constraints=payload.constraints,
@@ -99,66 +111,20 @@ class TaskService:
         await db.commit()
         await db.refresh(task)
 
-        if task.scheduled_start and task.scheduled_end:
+        if pref == "auto":
+            # Explicitly requested automatic scheduling
+            await TaskService._auto_schedule_task_core(db=db, user_id=user_id, task=task)
+        elif task.scheduled_start and task.scheduled_end:
+            # Explicit manual scheduling
             await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
             await NotificationService.reconcile_task_lifecycle(
                 db=db, user_id=user_id, task=task, event="task_schedule_changed"
             )
-        elif task.deadline:
-            # Deterministic auto-scheduling for deadline tasks:
-            # Attempt to allocate a conflict-free working slot on the deadline date before the deadline
-            try:
-                import zoneinfo
-                from app.db.models.profile import Profile
-                from app.services.scheduler.service import SchedulerService
+        else:
+            # Unscheduled
+            await CalendarSyncService.ensure_schedule_block_for_task(db=db, task=task, user_id=user_id)
 
-                profile = await db.scalar(select(Profile).where(Profile.id == user_id))
-                user_tz_str = profile.timezone if profile and profile.timezone else "Asia/Dhaka"
-                try:
-                    user_tz = zoneinfo.ZoneInfo(user_tz_str)
-                except Exception:
-                    user_tz = zoneinfo.ZoneInfo("Asia/Dhaka")
-
-                dl_loc = (
-                    task.deadline.astimezone(user_tz)
-                    if task.deadline.tzinfo
-                    else task.deadline.replace(tzinfo=UTC).astimezone(user_tz)
-                )
-                target_date = dl_loc.date()
-
-                proposal = await SchedulerService.generate_proposal(
-                    db=db,
-                    user_id=user_id,
-                    target_date=target_date,
-                    task_ids=[task.id],
-                    enforce_buffer=True,
-                )
-
-                matching_block = next(
-                    (b for b in proposal.blocks if b.task_id == task.id and b.block_type == "task"),
-                    None,
-                )
-                dl_utc = task.deadline if task.deadline.tzinfo else task.deadline.replace(tzinfo=UTC)
-                if matching_block and matching_block.end_time <= dl_utc:
-                    task.scheduled_start = matching_block.start_time
-                    task.scheduled_end = matching_block.end_time
-                    task.calendar_sync_status = "pending"
-                    await db.commit()
-                    await db.refresh(task)
-                    await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
-                    await NotificationService.reconcile_task_lifecycle(
-                        db=db, user_id=user_id, task=task, event="task_schedule_changed"
-                    )
-                else:
-                    task.calendar_sync_status = "unscheduled"
-                    await db.commit()
-                    await db.refresh(task)
-            except Exception as exc:
-                logger.warning("Deterministic auto-scheduling skipped on task create", task_id=str(task.id), error=str(exc))
-                task.calendar_sync_status = "unscheduled"
-                await db.commit()
-                await db.refresh(task)
-
+        if task.deadline:
             await NotificationService.reconcile_task_lifecycle(
                 db=db, user_id=user_id, task=task, event="task_deadline_changed"
             )
@@ -169,8 +135,102 @@ class TaskService:
             user_id=str(user_id),
             title=task.title,
             priority=task.priority,
+            scheduled_start=str(task.scheduled_start) if task.scheduled_start else None,
         )
         return task
+
+    @classmethod
+    async def auto_schedule_task(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+    ) -> tuple[Task, bool, str]:
+        """Attempt to find and allocate a conflict-free working slot for the task."""
+        task = await cls.get_task_by_id(db, user_id, task_id)
+        return await cls._auto_schedule_task_core(db=db, user_id=user_id, task=task)
+
+    @classmethod
+    async def _auto_schedule_task_core(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        task: Task,
+    ) -> tuple[Task, bool, str]:
+        """Internal solver invocation for scheduling a task."""
+        import zoneinfo
+        from app.db.models.profile import Profile
+        from app.services.scheduler.service import SchedulerService
+
+        profile = await db.scalar(select(Profile).where(Profile.id == user_id))
+        user_tz_str = profile.timezone if profile and profile.timezone else "UTC"
+        try:
+            user_tz = zoneinfo.ZoneInfo(user_tz_str)
+        except Exception:
+            user_tz = zoneinfo.ZoneInfo("UTC")
+
+        now_loc = datetime.now(user_tz)
+        if task.deadline:
+            dl_loc = (
+                task.deadline.astimezone(user_tz)
+                if task.deadline.tzinfo
+                else task.deadline.replace(tzinfo=UTC).astimezone(user_tz)
+            )
+            target_date = dl_loc.date() if dl_loc.date() >= now_loc.date() else now_loc.date()
+        else:
+            target_date = now_loc.date()
+
+        try:
+            proposal = await SchedulerService.generate_proposal(
+                db=db,
+                user_id=user_id,
+                target_date=target_date,
+                task_ids=[task.id],
+                enforce_buffer=True,
+            )
+
+            matching_block = next(
+                (b for b in proposal.blocks if b.task_id == task.id and b.block_type == "task"),
+                None,
+            )
+
+            if matching_block:
+                dl_utc = task.deadline if (task.deadline and task.deadline.tzinfo) else (task.deadline.replace(tzinfo=UTC) if task.deadline else None)
+                if dl_utc and matching_block.end_time > dl_utc:
+                    task.calendar_sync_status = "unscheduled"
+                    await db.commit()
+                    await db.refresh(task)
+                    return task, False, "Could not find an available slot before the task deadline."
+
+                task.scheduled_start = matching_block.start_time
+                task.scheduled_end = matching_block.end_time
+                task.calendar_sync_status = "pending"
+                task.updated_at = datetime.now(UTC)
+                await db.commit()
+                await db.refresh(task)
+
+                await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
+                await NotificationService.reconcile_task_lifecycle(
+                    db=db, user_id=user_id, task=task, event="task_schedule_changed"
+                )
+                if task.deadline:
+                    await NotificationService.reconcile_task_lifecycle(
+                        db=db, user_id=user_id, task=task, event="task_deadline_changed"
+                    )
+
+                time_str = matching_block.start_time.strftime("%b %d at %H:%M UTC")
+                return task, True, f"Task successfully scheduled for {time_str}."
+            else:
+                task.calendar_sync_status = "unscheduled"
+                await db.commit()
+                await db.refresh(task)
+                return task, False, f"No available slot found within working hours on {target_date.strftime('%b %d')}."
+        except Exception as exc:
+            logger.warning("Auto-scheduling failed", task_id=str(task.id), error=str(exc))
+            task.calendar_sync_status = "unscheduled"
+            await db.commit()
+            await db.refresh(task)
+            return task, False, f"Scheduling error: {exc}"
 
     @staticmethod
     async def get_task_by_id(
@@ -360,8 +420,41 @@ class TaskService:
         task_id: uuid.UUID,
         client_ip: str | None = None,
     ) -> None:
-        """Hard delete a task and record an audit log in a single transaction."""
+        """Hard delete a task, cleaning up associated calendar events and schedule blocks."""
         task = await TaskService.get_task_by_id(db, user_id, task_id)
+
+        # 1. Clean up external calendar event if exists
+        if task.google_calendar_event_id:
+            try:
+                from app.services.calendar.service import CalendarService
+                is_enabled, conn = await CalendarSyncService.is_sync_enabled_for_user(db, user_id)
+                if is_enabled and conn:
+                    access_token = await CalendarService.get_valid_access_token(conn, db)
+                    provider = CalendarService.get_provider()
+                    await provider.delete_event(access_token, task.google_calendar_event_id)
+            except Exception as exc:
+                logger.warning("Failed to delete remote event on task deletion", task_id=str(task_id), error=str(exc))
+
+            # Delete local CalendarEvent cache if matching
+            from app.db.models.calendar import CalendarEvent
+            local_ev_stmt = select(CalendarEvent).where(
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.external_id == task.google_calendar_event_id,
+            )
+            local_res = await db.execute(local_ev_stmt)
+            local_ev = local_res.scalar_one_or_none()
+            if local_ev:
+                await db.delete(local_ev)
+
+        # 2. Clean up associated ScheduleBlock
+        from sqlalchemy import delete as sa_delete
+        from app.db.models.schedule import ScheduleBlock
+        await db.execute(
+            sa_delete(ScheduleBlock).where(
+                ScheduleBlock.task_id == task.id,
+                ScheduleBlock.user_id == user_id,
+            )
+        )
 
         audit_entry = AuditLog(
             id=uuid.uuid4(),
@@ -379,6 +472,25 @@ class TaskService:
         await db.commit()
 
         logger.info("Task deleted", task_id=str(task_id), user_id=str(user_id))
+
+    @classmethod
+    async def sync_task_calendar(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        task_id: uuid.UUID,
+    ) -> Task:
+        """Retry or perform Google Calendar synchronization for a scheduled task."""
+        task = await cls.get_task_by_id(db, user_id, task_id)
+        if not task.scheduled_start or not task.scheduled_end:
+            raise AppException(
+                detail="Cannot sync unscheduled task to Google Calendar. Please schedule a time first.",
+                status_code=400,
+                error_code="TASK_NOT_SCHEDULED",
+            )
+        await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
+        await db.refresh(task)
+        return task
 
     @staticmethod
     async def complete_task(

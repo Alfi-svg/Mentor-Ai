@@ -246,9 +246,11 @@ async def list_calendar_events(
             if t.google_calendar_event_id and t.google_calendar_event_id in ext_id_to_event_idx:
                 # Event already present from Google Calendar sync; enrich with task metadata
                 ev_idx = ext_id_to_event_idx[t.google_calendar_event_id]
+                formatted_items[ev_idx]["source"] = "task"
                 formatted_items[ev_idx]["task_id"] = str(t.id)
                 formatted_items[ev_idx]["priority"] = t.priority
                 formatted_items[ev_idx]["task_status"] = t.status
+                formatted_items[ev_idx]["calendar_sync_status"] = t.calendar_sync_status or "synced"
             else:
                 # Add scheduled task as a calendar item
                 formatted_items.append(

@@ -1052,15 +1052,38 @@ export default function CalendarWorkspacePage() {
                   )}
 
                   {selectedEvent.source === "task" && (
-                    <div className="rounded-lg border border-brand-500/20 bg-brand-500/10 p-3 flex items-center justify-between">
-                      <span className="text-brand-300">This event is synced to a task.</span>
-                      <Link
-                        href="/tasks"
-                        className="inline-flex items-center gap-1 font-semibold text-brand-400 hover:underline"
-                      >
-                        <span>View Tasks</span>
-                        <ExternalLink className="h-3 w-3" />
-                      </Link>
+                    <div className="rounded-lg border border-brand-500/30 bg-brand-500/10 p-3.5 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-brand-300">Linked Mentor AI Task</span>
+                          {selectedEvent.priority && (
+                            <span className="rounded bg-brand-500/20 px-1.5 py-0.5 text-[10px] font-bold text-brand-300 uppercase">
+                              {selectedEvent.priority}
+                            </span>
+                          )}
+                          {selectedEvent.task_status && (
+                            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-300 capitalize">
+                              {selectedEvent.task_status.replace("_", " ")}
+                            </span>
+                          )}
+                        </div>
+                        <Link
+                          href="/tasks"
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-brand-400 hover:underline"
+                        >
+                          <span>Manage in Tasks</span>
+                          <ExternalLink className="h-3 w-3" />
+                        </Link>
+                      </div>
+                      <p className="text-[11px] text-zinc-400 leading-relaxed">
+                        Changes to scheduled times or completion synchronize automatically with Mentor AI tasks and Google Calendar.
+                        {selectedEvent.calendar_sync_status && (
+                          <span className="block mt-1 font-mono text-[10px] text-zinc-400">
+                            Calendar Sync Status:{" "}
+                            <span className="text-emerald-400 font-semibold">{selectedEvent.calendar_sync_status}</span>
+                          </span>
+                        )}
+                      </p>
                     </div>
                   )}
 
