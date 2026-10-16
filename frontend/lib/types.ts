@@ -105,10 +105,14 @@ export interface AuthResponse {
 export interface CalendarStatus {
   is_connected: boolean;
   provider: string;
+  configured?: boolean;
+  status_label?: string;
   account_email: string | null;
   last_synced_at: string | null;
   scopes: string[];
-  message: string;
+  message?: string | null;
+  has_sufficient_scopes?: boolean;
+  missing_scopes?: string[];
 }
 
 export interface CalendarEvent {
@@ -440,6 +444,9 @@ export interface GmailStatus {
   account_email: string | null;
   last_synced_at: string | null;
   scopes: string[];
+  message?: string | null;
+  has_sufficient_scopes?: boolean;
+  missing_scopes?: string[];
 }
 
 export interface GmailMessageSummary {

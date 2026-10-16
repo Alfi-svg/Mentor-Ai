@@ -230,6 +230,26 @@ class CalendarSyncService:
             )
             return True
 
+        except CalendarProviderException as exc:
+            if exc.status_code == 403 or "insufficient" in str(exc).lower():
+                meta = dict(conn.metadata_json or {})
+                meta["scope_insufficient"] = True
+                conn.metadata_json = meta
+                conn.scopes = [s for s in (conn.scopes or []) if "calendar" not in s]
+            logger.error(
+                "Failed to sync task to Google Calendar",
+                task_id=str(task.id),
+                user_id=str(user_id),
+                error=str(exc),
+            )
+            task.calendar_sync_status = "failed"
+            task.calendar_sync_error = (
+                "Google Calendar permission missing. Please reconnect Google Calendar."
+                if (exc.status_code == 403 or "insufficient" in str(exc).lower())
+                else str(exc)
+            )
+            await db.commit()
+            return False
         except Exception as exc:
             logger.error(
                 "Failed to sync task to Google Calendar",

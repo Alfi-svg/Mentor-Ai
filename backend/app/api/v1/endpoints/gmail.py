@@ -80,7 +80,7 @@ async def oauth_callback(
     if error:
         err_msg = error_description or error or "OAuth authorization was denied or cancelled."
         if is_browser_nav:
-            dest = f"{settings.FRONTEND_URL}/settings/gmail?error={quote_plus(error)}&error_description={quote_plus(err_msg)}"
+            dest = f"{settings.FRONTEND_URL}/gmail?error={quote_plus(error)}&error_description={quote_plus(err_msg)}"
             return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
         raise AppException(
             status_code=400,
@@ -91,7 +91,7 @@ async def oauth_callback(
     if not code or not state:
         err_msg = "Missing required OAuth authorization code or state token."
         if is_browser_nav:
-            dest = f"{settings.FRONTEND_URL}/settings/gmail?error=missing_parameters&error_description={quote_plus(err_msg)}"
+            dest = f"{settings.FRONTEND_URL}/gmail?error=missing_parameters&error_description={quote_plus(err_msg)}"
             return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
         raise AppException(
             status_code=400,
@@ -103,12 +103,12 @@ async def oauth_callback(
         conn, email = await GmailService.handle_callback(code=code, state=state, db=db)
     except AppException as exc:
         if is_browser_nav:
-            dest = f"{settings.FRONTEND_URL}/settings/gmail?error={quote_plus(exc.error_code)}&error_description={quote_plus(exc.detail)}"
+            dest = f"{settings.FRONTEND_URL}/gmail?error={quote_plus(exc.error_code)}&error_description={quote_plus(exc.detail)}"
             return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
         raise
     except Exception as exc:
         if is_browser_nav:
-            dest = f"{settings.FRONTEND_URL}/settings/gmail?error=callback_failed&error_description={quote_plus(str(exc))}"
+            dest = f"{settings.FRONTEND_URL}/gmail?error=callback_failed&error_description={quote_plus(str(exc))}"
             return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
         raise AppException(
             status_code=400,
@@ -118,7 +118,7 @@ async def oauth_callback(
 
     if is_browser_nav:
         email_param = f"&email={quote_plus(email)}" if email else ""
-        dest = f"{settings.FRONTEND_URL}/settings/gmail?connected=true{email_param}"
+        dest = f"{settings.FRONTEND_URL}/gmail?connected=true{email_param}"
         return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
 
     return {

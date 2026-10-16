@@ -110,18 +110,6 @@ export function AppShell({ children }: AppShellProps) {
       icon: Sliders,
       description: "Routines & work hours",
     },
-    {
-      href: "/settings/calendar",
-      label: "Calendar Sync",
-      icon: Calendar,
-      description: "Google Calendar connection",
-    },
-    {
-      href: "/settings/gmail",
-      label: "Gmail Integration",
-      icon: Mail,
-      description: "Email sync & lifeops tasks",
-    },
   ];
 
   return (

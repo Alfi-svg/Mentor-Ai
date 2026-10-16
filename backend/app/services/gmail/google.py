@@ -42,11 +42,27 @@ GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 # Least-privilege Gmail scopes
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/gmail.send",
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
+
+
+def _safe_b64decode(data: str) -> str:
+    """Safely decode base64url data from Gmail API payloads with proper padding."""
+    if not data:
+        return ""
+    clean_str = data.strip().replace("\n", "").replace("\r", "")
+    missing_padding = (4 - len(clean_str) % 4) % 4
+    if missing_padding:
+        clean_str += "=" * missing_padding
+    try:
+        decoded_bytes = base64.urlsafe_b64decode(clean_str.encode("utf-8"))
+        return decoded_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 class GoogleGmailAdapter(GmailProvider):
@@ -79,7 +95,8 @@ class GoogleGmailAdapter(GmailProvider):
             "response_type": "code",
             "scope": " ".join(GMAIL_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "consent select_account",
+            "include_granted_scopes": "true",
             "state": state,
         }
         return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
@@ -290,19 +307,15 @@ class GoogleGmailAdapter(GmailProvider):
         body_data = payload.get("body", {}).get("data")
 
         if mime_type == "text/plain" and body_data:
-            try:
-                decoded = base64.urlsafe_b64decode(body_data.encode("utf-8") + b"==")
-                return decoded.decode("utf-8", errors="replace")
-            except Exception:
-                pass
+            text = _safe_b64decode(body_data)
+            if text:
+                return text
 
         # If html and no plain found yet
         if mime_type == "text/html" and body_data:
-            try:
-                decoded = base64.urlsafe_b64decode(body_data.encode("utf-8") + b"==")
-                return sanitize_email_text(decoded.decode("utf-8", errors="replace"))
-            except Exception:
-                pass
+            text = _safe_b64decode(body_data)
+            if text:
+                return sanitize_email_text(text)
 
         # Check multipart parts
         parts = payload.get("parts", [])
@@ -319,11 +332,9 @@ class GoogleGmailAdapter(GmailProvider):
         body_data = payload.get("body", {}).get("data")
 
         if mime_type == "text/html" and body_data:
-            try:
-                decoded = base64.urlsafe_b64decode(body_data.encode("utf-8") + b"==")
-                return decoded.decode("utf-8", errors="replace")
-            except Exception:
-                pass
+            text = _safe_b64decode(body_data)
+            if text:
+                return text
 
         parts = payload.get("parts", [])
         for part in parts:

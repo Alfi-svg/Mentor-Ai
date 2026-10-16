@@ -16,10 +16,14 @@ import {
   RefreshCw,
   Search,
   Send,
+  Settings,
+  Shield,
+  Sliders,
   Sparkles,
   Star,
   Tag,
   Trash2,
+  Unlink,
   User,
   X,
 } from "lucide-react";
@@ -49,6 +53,11 @@ export default function GmailWorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
+  // Settings drawer state
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [connecting, setConnecting] = useState<boolean>(false);
+  const [disconnecting, setDisconnecting] = useState<boolean>(false);
+
   // AI Summarization & Task Extraction state
   const [summaryResult, setSummaryResult] = useState<GmailEmailSummaryResult | null>(null);
   const [summarizing, setSummarizing] = useState<boolean>(false);
@@ -77,6 +86,64 @@ export default function GmailWorkspacePage() {
       .catch(() => setStatus(null));
   }, []);
 
+  // Parse URL search params
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get("settings") === "open" || sp.get("settings") === "true") {
+        setIsSettingsOpen(true);
+      }
+      if (sp.get("connected") === "true") {
+        setSuccessMessage("Gmail connected successfully with all required scopes.");
+      }
+      const err = sp.get("error");
+      if (err) {
+        setError(decodeURIComponent(err));
+      }
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const data = await apiClient.getGmailConnectUrl();
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to initiate Gmail connection.");
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm("Are you sure you want to disconnect Gmail?")) return;
+    setDisconnecting(true);
+    setError(null);
+    try {
+      await apiClient.disconnectGmail();
+      setSuccessMessage("Gmail account disconnected.");
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              is_connected: false,
+              status_label: "disconnected",
+              has_sufficient_scopes: false,
+            }
+          : null
+      );
+      setMessages([]);
+      setSelectedMessageId(null);
+      setSelectedDetail(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Gmail.");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
   // Fetch messages when folder or search query changes
   const loadMessages = useCallback(async () => {
     setLoadingList(true);
@@ -92,8 +159,24 @@ export default function GmailWorkspacePage() {
       if (data.length > 0 && !selectedMessageId) {
         setSelectedMessageId(data[0].id);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load messages.");
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : "Failed to load messages.";
+      if (
+        msg.includes("403") ||
+        msg.toLowerCase().includes("scope") ||
+        msg.includes("GMAIL_SCOPE_INSUFFICIENT")
+      ) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                has_sufficient_scopes: false,
+                status_label: "insufficient_scopes",
+              }
+            : null
+        );
+      }
+      setError(msg);
     } finally {
       setLoadingList(false);
     }
@@ -122,8 +205,24 @@ export default function GmailWorkspacePage() {
       .then((detail) => {
         if (isMounted) setSelectedDetail(detail);
       })
-      .catch((err) => {
-        if (isMounted) setError(err instanceof Error ? err.message : "Failed to load message detail.");
+      .catch((err: any) => {
+        const msg = err instanceof Error ? err.message : "Failed to load message detail.";
+        if (
+          msg.includes("403") ||
+          msg.toLowerCase().includes("scope") ||
+          msg.includes("GMAIL_SCOPE_INSUFFICIENT")
+        ) {
+          setStatus((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  has_sufficient_scopes: false,
+                  status_label: "insufficient_scopes",
+                }
+              : null
+          );
+        }
+        if (isMounted) setError(msg);
       })
       .finally(() => {
         if (isMounted) setLoadingDetail(false);
@@ -148,8 +247,24 @@ export default function GmailWorkspacePage() {
       if (selectedDetail && selectedDetail.id === msgId) {
         setSelectedDetail({ ...selectedDetail, is_starred: nextStarred });
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update star.");
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : "Failed to update star.";
+      if (
+        msg.includes("403") ||
+        msg.toLowerCase().includes("scope") ||
+        msg.includes("GMAIL_SCOPE_INSUFFICIENT")
+      ) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                has_sufficient_scopes: false,
+                status_label: "insufficient_scopes",
+              }
+            : null
+        );
+      }
+      setError(msg);
     }
   };
 
@@ -283,18 +398,36 @@ export default function GmailWorkspacePage() {
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight text-white">Gmail Workspace</h1>
                 {status?.is_connected ? (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-0.5">
-                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                    <span>{status.account_email || "Connected"}</span>
-                  </span>
+                  (status.has_sufficient_scopes ?? true) && status.status_label !== "insufficient_scopes" ? (
+                    <button
+                      onClick={() => setIsSettingsOpen(true)}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2.5 py-0.5 hover:bg-emerald-500/20 transition-colors"
+                      title="Gmail Connected - Click for Settings"
+                    >
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      <span>{status.account_email || "Connected"}</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleConnect}
+                      disabled={connecting}
+                      className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-0.5 hover:bg-amber-500/20 transition-colors"
+                      title="Scopes Missing - Click to Reconnect"
+                    >
+                      <AlertTriangle className="h-3 w-3 text-amber-400" />
+                      <span>Missing Scopes</span>
+                    </button>
+                  )
                 ) : (
-                  <Link
-                    href="/settings/gmail"
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-0.5 hover:underline"
+                  <button
+                    onClick={handleConnect}
+                    disabled={connecting}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-zinc-400 bg-zinc-800 border border-zinc-700 rounded px-2.5 py-0.5 hover:text-white hover:bg-zinc-700 transition-colors"
+                    title="Connect Gmail"
                   >
+                    <Unlink className="h-2.5 w-2.5" />
                     <span>Connect Gmail</span>
-                    <ExternalLink className="h-2.5 w-2.5" />
-                  </Link>
+                  </button>
                 )}
               </div>
               <p className="text-xs text-zinc-400">
@@ -304,6 +437,14 @@ export default function GmailWorkspacePage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              title="Gmail Integration Settings"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Settings</span>
+            </button>
             <button
               onClick={() => setIsComposeOpen(true)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition-colors shadow-sm"
@@ -321,6 +462,31 @@ export default function GmailWorkspacePage() {
             </button>
           </div>
         </div>
+
+        {/* Prominent Warning Banner if Insufficient Scopes */}
+        {status?.is_connected && (!status?.has_sufficient_scopes || status?.status_label === "insufficient_scopes") && (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200 shadow-sm">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400 mt-0.5" />
+              <div>
+                <p className="font-semibold text-amber-300">
+                  Gmail Account Missing Read/Modify Permissions
+                </p>
+                <p className="text-zinc-300 text-[11px] mt-0.5 leading-relaxed">
+                  Your Google account was connected without granting message access (<code className="text-amber-300 font-mono text-[10px]">https://www.googleapis.com/auth/gmail.readonly</code> & <code className="text-amber-300 font-mono text-[10px]">gmail.modify</code>). Google has blocked inbox retrieval with 403 Forbidden. Reconnect and select all permissions on the Google consent screen.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 px-3.5 py-1.5 font-semibold text-white transition-colors shadow-sm"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${connecting ? "animate-spin" : ""}`} />
+              <span>Reconnect Gmail</span>
+            </button>
+          </div>
+        )}
 
         {/* Global Notifications */}
         {error && (
@@ -403,6 +569,46 @@ export default function GmailWorkspacePage() {
                 <div className="flex items-center justify-center p-8 text-xs text-zinc-500 gap-2">
                   <RefreshCw className="h-3.5 w-3.5 animate-spin text-brand-400" />
                   <span>Loading messages...</span>
+                </div>
+              ) : status && (!status.has_sufficient_scopes || status.status_label === "insufficient_scopes") ? (
+                <div className="p-6 text-center space-y-3">
+                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                    <AlertTriangle className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xs font-semibold text-white">Forbidden: Missing Required Gmail Scope</h3>
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      Google blocked message retrieval because read/modify permissions were not granted during authorization. Reconnect your account to approve the required scopes.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleConnect}
+                    disabled={connecting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${connecting ? "animate-spin" : ""}`} />
+                    <span>Reconnect Gmail</span>
+                  </button>
+                </div>
+              ) : !status?.is_connected ? (
+                <div className="p-6 text-center space-y-3">
+                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">
+                    <Mail className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xs font-semibold text-white">Gmail Not Connected</h3>
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      Connect your Google account to browse inbox messages, extract actionable tasks, and compose drafts.
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleConnect}
+                    disabled={connecting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors"
+                  >
+                    <Mail className="h-3 w-3" />
+                    <span>Connect Gmail</span>
+                  </button>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="text-center p-8 text-xs text-zinc-500">
@@ -792,6 +998,141 @@ export default function GmailWorkspacePage() {
                 >
                   {stagingSend ? "Staging..." : "Confirm & Send"}
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Gmail Settings Drawer */}
+        {isSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/60 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150">
+            <div className="flex h-full w-full max-w-lg flex-col rounded-none sm:rounded-2xl border-l sm:border border-zinc-800 bg-zinc-900 p-5 shadow-2xl overflow-y-auto">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600/10 text-brand-400">
+                    <Sliders className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-white">Gmail Integration Settings</h2>
+                    <p className="text-[11px] text-zinc-400">Account authorization, scopes, and delivery safeguards</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-5 text-xs">
+                {/* Account Status Card */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      <Mail className="h-4 w-4 text-brand-400" />
+                      Google Gmail Account
+                    </span>
+                    {status?.is_connected ? (
+                      (status?.has_sufficient_scopes ?? true) && status?.status_label !== "insufficient_scopes" ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400 border border-emerald-500/20">
+                          <CheckCircle2 className="h-3 w-3" /> Connected
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-400 border border-amber-500/20">
+                          <AlertTriangle className="h-3 w-3" /> Missing Scopes
+                        </span>
+                      )
+                    ) : (
+                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">
+                        Disconnected
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 text-zinc-300">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Connected As:</span>
+                      <span className="font-mono text-zinc-200">{status?.account_email || "Not linked"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Security:</span>
+                      <span className="text-emerald-400 font-medium">AES-128 Encrypted at rest</span>
+                    </div>
+                  </div>
+
+                  {status?.is_connected && (!status?.has_sufficient_scopes || status?.status_label === "insufficient_scopes") && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-amber-200 text-[11px] leading-relaxed">
+                      Missing required scopes: <code className="font-mono text-amber-300">gmail.readonly</code> & <code className="font-mono text-amber-300">gmail.modify</code>. Click Reconnect below and make sure all permissions are granted on Google&apos;s consent screen.
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-zinc-800">
+                    <button
+                      onClick={handleConnect}
+                      disabled={connecting}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${connecting ? "animate-spin" : ""}`} />
+                      <span>{status?.is_connected ? "Reconnect Account" : "Connect Gmail Account"}</span>
+                    </button>
+                    {status?.is_connected && (
+                      <button
+                        onClick={handleDisconnect}
+                        disabled={disconnecting}
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-400 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Disconnect</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Scopes Transparency Card */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-zinc-200 font-semibold">
+                    <Shield className="h-4 w-4 text-brand-400" />
+                    <span>Requested Scopes & Permissions</span>
+                  </div>
+                  <ul className="space-y-2 text-[11px] text-zinc-300">
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <code className="text-zinc-200 font-mono">gmail.readonly</code>: Used solely to list and read emails for inbox view and task extraction.
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <code className="text-zinc-200 font-mono">gmail.modify</code>: Used to mark messages as read/unread or star important threads.
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <code className="text-zinc-200 font-mono">gmail.compose</code>: Used to prepare draft responses directly in your mailbox.
+                      </div>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                      <div>
+                        <code className="text-zinc-200 font-mono">gmail.send</code>: Used only after explicit human confirmation to transmit scheduled replies.
+                      </div>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Two-Phase Approval Disclosure */}
+                <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/40 p-3.5 text-[11px] text-zinc-400 space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-zinc-300 font-semibold">
+                    <Shield className="h-3.5 w-3.5 text-amber-400" />
+                    <span>Consequential Write Safeguards</span>
+                  </div>
+                  <p className="leading-relaxed">
+                    Mentor AI strictly enforces a two-phase human-in-the-loop approval policy for emails. AI will never send an email automatically. All email transmissions are staged as pending approval records under <Link href="/actions" className="text-brand-400 underline">Approvals & History</Link> where you must explicitly review and confirm them.
+                  </p>
+                </div>
               </div>
             </div>
           </div>

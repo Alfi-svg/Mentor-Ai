@@ -121,7 +121,7 @@ async def test_calendar_callback_denial_browser_redirect():
         )
         assert res.status_code == 303
         loc = res.headers["location"]
-        assert "settings/calendar" in loc
+        assert "/calendar" in loc
         assert "error=access_denied" in loc
 
 
@@ -149,7 +149,7 @@ async def test_gmail_callback_denial_browser_redirect():
         )
         assert res.status_code == 303
         loc = res.headers["location"]
-        assert "settings/gmail" in loc
+        assert "/gmail" in loc
         assert "error=access_denied" in loc
 
 
@@ -168,7 +168,7 @@ async def test_gmail_callback_denial_api_error():
 
 @pytest.mark.asyncio
 async def test_calendar_callback_success_browser_redirect(test_db: AsyncSession):
-    """Successful calendar authorization redirects browser to frontend settings page with connected status."""
+    """Successful calendar authorization redirects browser to frontend calendar page with connected status."""
     user_id = uuid.uuid4()
     profile = Profile(id=user_id, email="alice.cal@test.edu", timezone="UTC")
     test_db.add(profile)
@@ -186,13 +186,13 @@ async def test_calendar_callback_success_browser_redirect(test_db: AsyncSession)
             )
             assert res.status_code == 303
             loc = res.headers["location"]
-            assert "settings/calendar" in loc
+            assert "/calendar" in loc
             assert "connected=true" in loc
 
 
 @pytest.mark.asyncio
 async def test_gmail_callback_success_browser_redirect(test_db: AsyncSession):
-    """Successful Gmail authorization redirects browser to frontend settings page with connected status."""
+    """Successful Gmail authorization redirects browser to frontend gmail page with connected status."""
     user_id = uuid.uuid4()
     profile = Profile(id=user_id, email="bob.gmail@test.edu", timezone="UTC")
     test_db.add(profile)
@@ -209,7 +209,7 @@ async def test_gmail_callback_success_browser_redirect(test_db: AsyncSession):
             )
             assert res.status_code == 303
             loc = res.headers["location"]
-            assert "settings/gmail" in loc
+            assert "/gmail" in loc
             assert "connected=true" in loc
 
 

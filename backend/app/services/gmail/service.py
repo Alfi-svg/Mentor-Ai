@@ -46,6 +46,24 @@ from app.services.gmail.sanitizer import sanitize_email_text, wrap_untrusted_ema
 logger = get_logger("mentor_ai.gmail.service")
 
 
+def check_gmail_scopes(granted_scopes: list[str] | None) -> tuple[bool, list[str]]:
+    """Verify that granted OAuth scopes include required Gmail access."""
+    if not granted_scopes:
+        return False, ["https://www.googleapis.com/auth/gmail.readonly"]
+    if "https://mail.google.com/" in granted_scopes:
+        return True, []
+    missing: list[str] = []
+    if (
+        "https://www.googleapis.com/auth/gmail.readonly" not in granted_scopes
+        and "https://www.googleapis.com/auth/gmail.modify" not in granted_scopes
+    ):
+        missing.append("https://www.googleapis.com/auth/gmail.readonly")
+    if "https://www.googleapis.com/auth/gmail.modify" not in granted_scopes:
+        missing.append("https://www.googleapis.com/auth/gmail.modify")
+
+    return len(missing) == 0, missing
+
+
 class GmailService:
     """Orchestrates Gmail connections, message processing, and email action safety."""
 
@@ -81,26 +99,44 @@ class GmailService:
         res = await db.execute(stmt)
         conn = res.scalar_one_or_none()
 
-        if not conn:
+        if not conn or conn.status != "connected":
+            status_text = "unconfigured" if not has_creds else "disconnected"
+            if conn and conn.status == "revoked":
+                status_text = "revoked"
+            elif conn and conn.status == "expired":
+                status_text = "expired"
             return GmailStatusResponse(
                 provider="google_gmail",
                 is_connected=False,
                 configured=has_creds or provider.provider_name == "google_gmail",
-                status_label="unconfigured" if not has_creds else "disconnected",
-                account_email=None,
-                last_synced_at=None,
-                scopes=[],
+                status_label=status_text,
+                account_email=conn.provider_account_id if conn else None,
+                last_synced_at=conn.last_synced_at if conn else None,
+                scopes=conn.scopes if conn else [],
+                has_sufficient_scopes=False,
+                missing_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
             )
 
-        is_conn = conn.status == "connected"
+        has_sufficient, missing = check_gmail_scopes(conn.scopes)
+        if conn.metadata_json and conn.metadata_json.get("scope_insufficient"):
+            has_sufficient = False
+            if "https://www.googleapis.com/auth/gmail.readonly" not in missing:
+                missing.append("https://www.googleapis.com/auth/gmail.readonly")
+
+        status_label = "connected" if has_sufficient else "insufficient_scopes"
+        msg = None if has_sufficient else "Account connected but missing required Gmail permissions. Please reconnect."
+
         return GmailStatusResponse(
             provider="google_gmail",
-            is_connected=is_conn,
+            is_connected=True,
             configured=has_creds or provider.provider_name == "google_gmail",
-            status_label=conn.status,
+            status_label=status_label,
             account_email=conn.provider_account_id,
             last_synced_at=conn.last_synced_at,
             scopes=conn.scopes or [],
+            has_sufficient_scopes=has_sufficient,
+            missing_scopes=missing,
+            message=msg,
         )
 
     @classmethod
@@ -126,6 +162,8 @@ class GmailService:
 
         token_data = await provider.exchange_code(code)
 
+        has_sufficient, missing = check_gmail_scopes(token_data.scopes)
+
         enc_access = encrypt_token(token_data.access_token)
         enc_refresh = encrypt_token(token_data.refresh_token) if token_data.refresh_token else None
 
@@ -137,6 +175,16 @@ class GmailService:
         conn = res.scalar_one_or_none()
 
         now = datetime.now(UTC)
+        meta_dict: dict[str, Any] = {"token_type": token_data.token_type}
+        if not has_sufficient:
+            meta_dict["scope_insufficient"] = True
+            logger.warning(
+                "Gmail connected with insufficient scopes",
+                user_id=str(user_id),
+                granted_scopes=token_data.scopes,
+                missing=missing,
+            )
+
         if conn:
             conn.encrypted_access_token = enc_access
             if enc_refresh:
@@ -144,6 +192,12 @@ class GmailService:
             conn.token_expires_at = token_data.expires_at
             conn.scopes = token_data.scopes
             conn.status = "connected"
+            cur_meta = dict(conn.metadata_json or {})
+            if has_sufficient:
+                cur_meta.pop("scope_insufficient", None)
+            else:
+                cur_meta["scope_insufficient"] = True
+            conn.metadata_json = cur_meta
             if token_data.account_email:
                 conn.provider_account_id = token_data.account_email
             conn.updated_at = now
@@ -158,7 +212,7 @@ class GmailService:
                 token_expires_at=token_data.expires_at,
                 scopes=token_data.scopes,
                 status="connected",
-                metadata_json={},
+                metadata_json=meta_dict,
                 created_at=now,
                 updated_at=now,
             )
@@ -256,6 +310,22 @@ class GmailService:
 
         return decrypt_token(conn.encrypted_access_token)
 
+    @classmethod
+    async def _mark_scope_insufficient(cls, user_id: uuid.UUID, db: AsyncSession) -> None:
+        """Mark connection as having insufficient scopes in DB."""
+        stmt = select(ExternalConnection).where(
+            ExternalConnection.user_id == user_id,
+            ExternalConnection.provider == "google_gmail",
+        )
+        res = await db.execute(stmt)
+        conn = res.scalar_one_or_none()
+        if conn:
+            meta = dict(conn.metadata_json or {})
+            meta["scope_insufficient"] = True
+            conn.metadata_json = meta
+            conn.scopes = [s for s in (conn.scopes or []) if "gmail" not in s]
+            await db.commit()
+
     # -------------------------------------------------------------------------
     # 2. Reading & Searching Emails
     # -------------------------------------------------------------------------
@@ -273,13 +343,23 @@ class GmailService:
         token = await cls._get_valid_access_token(user_id=user_id, db=db)
         provider = cls.get_provider()
         safe_limit = max(1, min(limit, 50))
-        return await provider.list_messages(
-            access_token=token,
-            max_results=safe_limit,
-            query=query,
-            folder=folder,
-            page_token=page_token,
-        )
+        try:
+            return await provider.list_messages(
+                access_token=token,
+                max_results=safe_limit,
+                query=query,
+                folder=folder,
+                page_token=page_token,
+            )
+        except (GmailProviderException, AppException) as exc:
+            if getattr(exc, "status_code", None) == 403 or "scope" in str(exc).lower():
+                await cls._mark_scope_insufficient(user_id=user_id, db=db)
+                raise AppException(
+                    status_code=403,
+                    error_code="GMAIL_SCOPE_INSUFFICIENT",
+                    detail="Gmail permission missing. Please reconnect your Gmail account and ensure all permissions are granted on the Google consent screen.",
+                ) from exc
+            raise
 
     @classmethod
     async def get_message(
@@ -291,7 +371,17 @@ class GmailService:
         """Fetch full details and body of a single message."""
         token = await cls._get_valid_access_token(user_id=user_id, db=db)
         provider = cls.get_provider()
-        return await provider.get_message_detail(access_token=token, message_id=message_id)
+        try:
+            return await provider.get_message_detail(access_token=token, message_id=message_id)
+        except (GmailProviderException, AppException) as exc:
+            if getattr(exc, "status_code", None) == 403 or "scope" in str(exc).lower():
+                await cls._mark_scope_insufficient(user_id=user_id, db=db)
+                raise AppException(
+                    status_code=403,
+                    error_code="GMAIL_SCOPE_INSUFFICIENT",
+                    detail="Gmail permission missing. Please reconnect your Gmail account and ensure all permissions are granted on the Google consent screen.",
+                ) from exc
+            raise
 
     @classmethod
     async def modify_message(
@@ -305,12 +395,22 @@ class GmailService:
         """Add or remove label IDs on a message (e.g. UNREAD, STARRED)."""
         token = await cls._get_valid_access_token(user_id=user_id, db=db)
         provider = cls.get_provider()
-        return await provider.modify_message(
-            access_token=token,
-            message_id=message_id,
-            add_label_ids=add_labels,
-            remove_label_ids=remove_labels,
-        )
+        try:
+            return await provider.modify_message(
+                access_token=token,
+                message_id=message_id,
+                add_label_ids=add_labels,
+                remove_label_ids=remove_labels,
+            )
+        except (GmailProviderException, AppException) as exc:
+            if getattr(exc, "status_code", None) == 403 or "scope" in str(exc).lower():
+                await cls._mark_scope_insufficient(user_id=user_id, db=db)
+                raise AppException(
+                    status_code=403,
+                    error_code="GMAIL_SCOPE_INSUFFICIENT",
+                    detail="Gmail permission missing. Please reconnect your Gmail account and ensure all permissions are granted on the Google consent screen.",
+                ) from exc
+            raise
 
     # -------------------------------------------------------------------------
     # 3. AI Summarization & LifeOps Task Extraction

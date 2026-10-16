@@ -25,6 +25,7 @@ from app.services.calendar.base import (
     CalendarAuthExpiredException,
     CalendarAuthRevokedException,
     CalendarProvider,
+    CalendarProviderException,
 )
 from app.services.calendar.google import GoogleCalendarAdapter
 from app.services.calendar.mock import MockCalendarAdapter
@@ -45,6 +46,22 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
+
+
+def check_calendar_scopes(granted_scopes: list[str] | None) -> tuple[bool, list[str]]:
+    """Verify that granted OAuth scopes include required Calendar event access."""
+    if not granted_scopes:
+        return False, ["https://www.googleapis.com/auth/calendar.events"]
+    has_events = any(
+        s in granted_scopes
+        for s in (
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar",
+        )
+    )
+    if not has_events:
+        return False, ["https://www.googleapis.com/auth/calendar.events"]
+    return True, []
 
 
 class CalendarService:
@@ -90,6 +107,9 @@ class CalendarService:
         # Exchange authorization code for tokens
         token_data = await provider.exchange_code(code)
 
+        # Verify granted scopes
+        has_sufficient, missing = check_calendar_scopes(token_data.scopes)
+
         # Encrypt tokens for storage at rest
         enc_access = encrypt_token(token_data.access_token)
         enc_refresh = encrypt_token(token_data.refresh_token) if token_data.refresh_token else None
@@ -103,6 +123,16 @@ class CalendarService:
         conn = res.scalar_one_or_none()
 
         now = datetime.now(UTC)
+        meta_dict: dict[str, Any] = {"token_type": token_data.token_type}
+        if not has_sufficient:
+            meta_dict["scope_insufficient"] = True
+            logger.warning(
+                "Calendar connected with insufficient scopes",
+                user_id=str(user_id),
+                granted_scopes=token_data.scopes,
+                missing=missing,
+            )
+
         if conn is None:
             conn = ExternalConnection(
                 id=uuid.uuid4(),
@@ -114,7 +144,7 @@ class CalendarService:
                 token_expires_at=token_data.expires_at,
                 scopes=token_data.scopes,
                 status="connected",
-                metadata_json={"token_type": token_data.token_type},
+                metadata_json=meta_dict,
                 created_at=now,
                 updated_at=now,
             )
@@ -126,6 +156,12 @@ class CalendarService:
             conn.token_expires_at = token_data.expires_at
             conn.scopes = token_data.scopes
             conn.status = "connected"
+            cur_meta = dict(conn.metadata_json or {})
+            if has_sufficient:
+                cur_meta.pop("scope_insufficient", None)
+            else:
+                cur_meta["scope_insufficient"] = True
+            conn.metadata_json = cur_meta
             if token_data.account_email:
                 conn.provider_account_id = token_data.account_email
             conn.updated_at = now
@@ -195,14 +231,14 @@ class CalendarService:
     @classmethod
     async def get_status(cls, user_id: uuid.UUID, db: AsyncSession) -> CalendarStatusResponse:
         """Return user calendar connection state truthfully."""
-        configured = settings.has_google_calendar_credentials or cls._provider_override is not None
-
         stmt = select(ExternalConnection).where(
             ExternalConnection.user_id == user_id,
             ExternalConnection.provider == "google_calendar",
         )
         res = await db.execute(stmt)
         conn = res.scalar_one_or_none()
+
+        configured = settings.has_google_calendar_credentials or cls._provider_override is not None
 
         if not configured:
             return CalendarStatusResponse(
@@ -225,16 +261,31 @@ class CalendarService:
                 status_label=status_text,
                 account_email=conn.provider_account_id if conn else None,
                 last_synced_at=conn.last_synced_at if conn else None,
+                scopes=conn.scopes if conn else [],
+                has_sufficient_scopes=False,
+                missing_scopes=["https://www.googleapis.com/auth/calendar.events"],
             )
+
+        has_sufficient, missing = check_calendar_scopes(conn.scopes)
+        if conn.metadata_json and conn.metadata_json.get("scope_insufficient"):
+            has_sufficient = False
+            if "https://www.googleapis.com/auth/calendar.events" not in missing:
+                missing.append("https://www.googleapis.com/auth/calendar.events")
+
+        status_label = "Connected" if has_sufficient else "insufficient_scopes"
+        msg = None if has_sufficient else "Account connected but missing Google Calendar event permissions. Please reconnect."
 
         return CalendarStatusResponse(
             provider="google_calendar",
             is_connected=True,
             configured=True,
-            status_label="Connected",
+            status_label=status_label,
             account_email=conn.provider_account_id,
             last_synced_at=conn.last_synced_at,
-            scopes=conn.scopes,
+            scopes=conn.scopes or [],
+            has_sufficient_scopes=has_sufficient,
+            missing_scopes=missing,
+            message=msg,
         )
 
     @classmethod
@@ -427,6 +478,24 @@ class CalendarService:
                 remote_event = await provider.create_event(access_token, event_data)
                 external_id = remote_event.external_id
                 pushed_to_remote = True
+            except CalendarProviderException as exc:
+                if exc.status_code == 403 or "insufficient" in str(exc).lower():
+                    meta = dict(conn.metadata_json or {})
+                    meta["scope_insufficient"] = True
+                    conn.metadata_json = meta
+                    conn.scopes = [s for s in (conn.scopes or []) if "calendar" not in s]
+                    await db.commit()
+                    raise AppException(
+                        status_code=403,
+                        error_code="CALENDAR_SCOPE_INSUFFICIENT",
+                        detail="Google Calendar permission missing. Please reconnect your Google Calendar account and grant Calendar permissions.",
+                    ) from exc
+                logger.error(
+                    "Failed to create event on remote calendar provider",
+                    user_id=str(user_id),
+                    error=str(exc),
+                )
+                raise
             except Exception as exc:
                 logger.error(
                     "Failed to create event on remote calendar provider",
@@ -491,6 +560,19 @@ class CalendarService:
                     access_token = await cls.get_valid_access_token(conn, db)
                     provider = cls.get_provider()
                     await provider.update_event(access_token, event.external_id, event_data)
+                except CalendarProviderException as exc:
+                    if exc.status_code == 403 or "insufficient" in str(exc).lower():
+                        meta = dict(conn.metadata_json or {})
+                        meta["scope_insufficient"] = True
+                        conn.metadata_json = meta
+                        conn.scopes = [s for s in (conn.scopes or []) if "calendar" not in s]
+                        await db.commit()
+                    logger.warning(
+                        "Failed to update event on remote calendar provider",
+                        event_id=str(event.id),
+                        external_id=event.external_id,
+                        error=str(exc),
+                    )
                 except Exception as exc:
                     logger.warning(
                         "Failed to update event on remote calendar provider",

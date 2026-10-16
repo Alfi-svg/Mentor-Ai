@@ -12,10 +12,13 @@ class GmailStatusResponse(BaseModel):
     provider: str = "google_gmail"
     is_connected: bool
     configured: bool
-    status_label: str  # connected, disconnected, unconfigured, revoked, expired
+    status_label: str  # connected, disconnected, unconfigured, revoked, expired, insufficient_scopes
     account_email: str | None = None
     last_synced_at: datetime | None = None
     scopes: list[str] = Field(default_factory=list)
+    has_sufficient_scopes: bool = True
+    missing_scopes: list[str] = Field(default_factory=list)
+    message: str | None = None
 
 
 class GmailConnectResponse(BaseModel):

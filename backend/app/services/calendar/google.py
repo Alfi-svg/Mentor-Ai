@@ -73,7 +73,8 @@ class GoogleCalendarAdapter(CalendarProvider):
             "response_type": "code",
             "scope": " ".join(GOOGLE_SCOPES),
             "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "consent select_account",
+            "include_granted_scopes": "true",
             "state": state,
         }
         return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"

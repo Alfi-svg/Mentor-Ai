@@ -10,15 +10,27 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
+  Layers,
   MapPin,
   Plus,
   RefreshCw,
+  Settings,
+  ShieldCheck,
+  Sliders,
   Trash2,
+  Unlink,
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { apiClient, ApiClientError } from "@/lib/api-client";
-import { CalendarEvent, CalendarEventCreatePayload, CalendarEventUpdatePayload, CalendarStatus } from "@/lib/types";
+import {
+  CalendarEvent,
+  CalendarEventCreatePayload,
+  CalendarEventUpdatePayload,
+  CalendarStatus,
+  CalendarTaskSyncSummary,
+  ConflictCheckResult,
+} from "@/lib/types";
 
 type CalendarViewMode = "month" | "week" | "day";
 
@@ -31,6 +43,17 @@ export default function CalendarWorkspacePage() {
   const [status, setStatus] = useState<CalendarStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Settings drawer & Availability tool state
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [connecting, setConnecting] = useState<boolean>(false);
+  const [disconnecting, setDisconnecting] = useState<boolean>(false);
+  const [taskSyncSummary, setTaskSyncSummary] = useState<CalendarTaskSyncSummary | null>(null);
+  const [conflictDate, setConflictDate] = useState<string>(
+    new Date().toISOString().slice(0, 10)
+  );
+  const [conflictResult, setConflictResult] = useState<ConflictCheckResult | null>(null);
+  const [checkingConflicts, setCheckingConflicts] = useState<boolean>(false);
 
   // Selected event for detail/edit modal
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
@@ -100,6 +123,75 @@ export default function CalendarWorkspacePage() {
     loadEvents();
   }, [loadEvents]);
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const sp = new URLSearchParams(window.location.search);
+      if (sp.get("settings") === "open" || sp.get("settings") === "true") {
+        setIsSettingsOpen(true);
+      }
+      if (sp.get("connected") === "true") {
+        setSuccessMessage("Google Calendar connected successfully with all required scopes.");
+      }
+      const err = sp.get("error");
+      if (err) {
+        setError(decodeURIComponent(err));
+      }
+    }
+  }, []);
+
+  const handleConnect = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const data = await apiClient.getCalendarConnectUrl();
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to initiate Google Calendar connection.");
+      setConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!confirm("Are you sure you want to disconnect Google Calendar?")) return;
+    setDisconnecting(true);
+    setError(null);
+    try {
+      await apiClient.disconnectCalendar();
+      setSuccessMessage("Google Calendar disconnected.");
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              is_connected: false,
+              status_label: "disconnected",
+              has_sufficient_scopes: false,
+            }
+          : null
+      );
+      await loadEvents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to disconnect Google Calendar.");
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const handleCheckConflicts = async () => {
+    if (!conflictDate) return;
+    setCheckingConflicts(true);
+    setError(null);
+    try {
+      const res = await apiClient.checkConflicts(conflictDate);
+      setConflictResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to analyze conflicts and free slots.");
+    } finally {
+      setCheckingConflicts(false);
+    }
+  };
+
   // Date Navigation
   const handlePrev = () => {
     const d = new Date(currentDate);
@@ -127,12 +219,29 @@ export default function CalendarWorkspacePage() {
     setSuccessMessage(null);
     try {
       const res = await apiClient.syncCalendarTasks();
+      setTaskSyncSummary(res);
       setSuccessMessage(
         `Synchronized ${res.synced} tasks to Google Calendar${res.failed > 0 ? ` (${res.failed} failed)` : ""}.`
       );
       await loadEvents();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to synchronize tasks.");
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : "Failed to synchronize tasks.";
+      if (
+        msg.includes("403") ||
+        msg.toLowerCase().includes("scope") ||
+        msg.includes("CALENDAR_SCOPE_INSUFFICIENT")
+      ) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                has_sufficient_scopes: false,
+                status_label: "insufficient_scopes",
+              }
+            : null
+        );
+      }
+      setError(msg);
     } finally {
       setSyncing(false);
     }
@@ -150,8 +259,24 @@ export default function CalendarWorkspacePage() {
       setIsCreateOpen(false);
       setSuccessMessage("Event created and saved to Google Calendar.");
       await loadEvents();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create event.");
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : "Failed to create event.";
+      if (
+        msg.includes("403") ||
+        msg.toLowerCase().includes("scope") ||
+        msg.includes("CALENDAR_SCOPE_INSUFFICIENT")
+      ) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                has_sufficient_scopes: false,
+                status_label: "insufficient_scopes",
+              }
+            : null
+        );
+      }
+      setError(msg);
     }
   };
 
@@ -172,8 +297,24 @@ export default function CalendarWorkspacePage() {
       setSelectedEvent(null);
       setSuccessMessage("Event updated successfully.");
       await loadEvents();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update event.");
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : "Failed to update event.";
+      if (
+        msg.includes("403") ||
+        msg.toLowerCase().includes("scope") ||
+        msg.includes("CALENDAR_SCOPE_INSUFFICIENT")
+      ) {
+        setStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                has_sufficient_scopes: false,
+                status_label: "insufficient_scopes",
+              }
+            : null
+        );
+      }
+      setError(msg);
     }
   };
 
@@ -301,6 +442,50 @@ export default function CalendarWorkspacePage() {
               </button>
             </div>
 
+            {/* Status Indicator */}
+            {status?.is_connected ? (
+              (status?.has_sufficient_scopes ?? true) && status?.status_label !== "insufficient_scopes" ? (
+                <button
+                  onClick={() => setIsSettingsOpen(true)}
+                  className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                  title="Google Calendar Connected - Click for Settings"
+                >
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  <span className="truncate max-w-[140px]">{status.account_email || "Connected"}</span>
+                </button>
+              ) : (
+                <button
+                  onClick={handleConnect}
+                  disabled={connecting}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors"
+                  title="Scopes missing - Click to Reconnect"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
+                  <span>Missing Scopes</span>
+                </button>
+              )
+            ) : (
+              <button
+                onClick={handleConnect}
+                disabled={connecting}
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors"
+                title="Connect Google Calendar"
+              >
+                <Unlink className="h-3.5 w-3.5" />
+                <span>Not Connected</span>
+              </button>
+            )}
+
+            {/* Settings Drawer Button */}
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              title="Calendar Integration Settings & Availability"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span className="hidden xl:inline">Settings</span>
+            </button>
+
             {/* Sync Now Button */}
             <button
               onClick={handleSyncTasks}
@@ -322,6 +507,31 @@ export default function CalendarWorkspacePage() {
             </button>
           </div>
         </div>
+
+        {/* Prominent Warning Banner if Insufficient Scopes */}
+        {status?.is_connected && (!status?.has_sufficient_scopes || status?.status_label === "insufficient_scopes") && (
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs text-amber-200 shadow-sm">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-400 mt-0.5" />
+              <div>
+                <p className="font-semibold text-amber-300">
+                  Google Calendar Missing Event Permissions
+                </p>
+                <p className="text-zinc-300 text-[11px] mt-0.5 leading-relaxed">
+                  Your Google account was connected without the necessary event write/sync scope (<code className="text-amber-300 font-mono text-[10px]">https://www.googleapis.com/auth/calendar.events</code>). Creating events or syncing tasks will be rejected by Google with 403 Forbidden until you grant event management access.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={handleConnect}
+              disabled={connecting}
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 px-3.5 py-1.5 font-semibold text-white transition-colors shadow-sm"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${connecting ? "animate-spin" : ""}`} />
+              <span>Reconnect Google Calendar</span>
+            </button>
+          </div>
+        )}
 
         {/* Status Alerts */}
         {error && (
@@ -883,6 +1093,223 @@ export default function CalendarWorkspacePage() {
                   </div>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Settings & Availability Drawer */}
+        {isSettingsOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-end bg-black/60 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150">
+            <div className="flex h-full w-full max-w-lg flex-col rounded-none sm:rounded-2xl border-l sm:border border-zinc-800 bg-zinc-900 p-5 shadow-2xl overflow-y-auto">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600/10 text-brand-400">
+                    <Sliders className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-white">Calendar Settings & Availability</h2>
+                    <p className="text-[11px] text-zinc-400">Manage OAuth connection, tasks sync, and busy blocks</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setIsSettingsOpen(false)}
+                  className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-5 text-xs">
+                {/* Connection Box */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-white flex items-center gap-1.5">
+                      <CalendarIcon className="h-4 w-4 text-brand-400" />
+                      Google Calendar Integration
+                    </span>
+                    {status?.is_connected ? (
+                      (status?.has_sufficient_scopes ?? true) && status?.status_label !== "insufficient_scopes" ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-400 border border-emerald-500/20">
+                          <CheckCircle2 className="h-3 w-3" /> Connected
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] font-medium text-amber-400 border border-amber-500/20">
+                          <AlertTriangle className="h-3 w-3" /> Missing Scopes
+                        </span>
+                      )
+                    ) : (
+                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">
+                        Disconnected
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1 text-zinc-300">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Account:</span>
+                      <span className="font-mono text-zinc-200">{status?.account_email || "Not connected"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Last Synced:</span>
+                      <span>{status?.last_synced_at ? new Date(status.last_synced_at).toLocaleString() : "Never"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Token Storage:</span>
+                      <span className="text-emerald-400 font-medium">AES-128 Encrypted at rest</span>
+                    </div>
+                  </div>
+
+                  {status?.is_connected && (!status?.has_sufficient_scopes || status?.status_label === "insufficient_scopes") && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-amber-200 text-[11px]">
+                      Required scope <code className="font-mono text-amber-300">calendar.events</code> is missing. Please click Reconnect below to grant access.
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-zinc-800">
+                    <button
+                      onClick={handleConnect}
+                      disabled={connecting}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 px-3 py-2 text-xs font-semibold text-white transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${connecting ? "animate-spin" : ""}`} />
+                      <span>{status?.is_connected ? "Reconnect Account" : "Connect Google Calendar"}</span>
+                    </button>
+                    {status?.is_connected && (
+                      <button
+                        onClick={handleDisconnect}
+                        disabled={disconnecting}
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-400 hover:bg-rose-500/20 transition-colors disabled:opacity-50"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span>Disconnect</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Task Sync Card */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Layers className="h-4 w-4 text-brand-400" />
+                      <span className="font-semibold text-white">Task & Schedule Synchronization</span>
+                    </div>
+                    <Link href="/tasks" className="text-[11px] text-brand-400 hover:underline flex items-center gap-1">
+                      <span>Tasks Backlog</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </Link>
+                  </div>
+                  <p className="text-[11px] text-zinc-400 leading-relaxed">
+                    Automatically propagates scheduled tasks into your Google Calendar. Rescheduling updates event timing; task completion updates title to <code className="text-zinc-300 font-mono">[DONE]</code>; cancellations safely prune the calendar event.
+                  </p>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      onClick={handleSyncTasks}
+                      disabled={syncing}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-2 font-semibold text-white hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+                      <span>{syncing ? "Synchronizing Tasks..." : "Sync All Tasks Now"}</span>
+                    </button>
+                    {taskSyncSummary && (
+                      <span className="text-[11px] text-emerald-400 font-mono">
+                        Synced: {taskSyncSummary.synced} | Failed: {taskSyncSummary.failed}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Free Slot & Conflict Discovery Tool */}
+                <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Clock className="h-4 w-4 text-brand-400" />
+                      <span className="font-semibold text-white">Free Slot & Conflict Inspector</span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-zinc-400">
+                    Query your Google Calendar events to find available work slots and verify absence of meeting conflicts.
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      value={conflictDate}
+                      onChange={(e) => setConflictDate(e.target.value)}
+                      className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs text-white focus:border-brand-500 focus:outline-none"
+                    />
+                    <button
+                      onClick={handleCheckConflicts}
+                      disabled={checkingConflicts}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 font-semibold text-white hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                    >
+                      {checkingConflicts ? "Analyzing..." : "Check Availability"}
+                    </button>
+                  </div>
+
+                  {conflictResult && (
+                    <div className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 p-3 space-y-2 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-white">{conflictResult.target_date}</span>
+                        <span
+                          className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase ${
+                            conflictResult.has_conflicts
+                              ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                              : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                          }`}
+                        >
+                          {conflictResult.has_conflicts
+                            ? `${conflictResult.total_busy_minutes} Busy Min`
+                            : "Fully Free"}
+                        </span>
+                      </div>
+
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase font-bold text-zinc-500">
+                          Free Slots ({conflictResult.free_slots.length})
+                        </span>
+                        <div className="grid gap-1.5 max-h-36 overflow-y-auto">
+                          {conflictResult.free_slots.length === 0 ? (
+                            <p className="text-[11px] text-zinc-500">No free slots found.</p>
+                          ) : (
+                            conflictResult.free_slots.map((slot, i) => (
+                              <div
+                                key={i}
+                                className="rounded border border-zinc-800 bg-zinc-800/40 px-2 py-1 font-mono text-[11px] text-zinc-300 flex justify-between"
+                              >
+                                <span>
+                                  {new Date(slot.start_time).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}{" "}
+                                  -{" "}
+                                  {new Date(slot.end_time).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                                <span className="text-zinc-500">{slot.duration_minutes}m</span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Scopes Security Disclosure */}
+                <div className="rounded-lg border border-zinc-800/60 bg-zinc-900/30 p-3 text-[11px] text-zinc-400 space-y-1">
+                  <div className="flex items-center gap-1.5 text-zinc-300 font-semibold">
+                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                    <span>Least-Privilege Policy</span>
+                  </div>
+                  <p>
+                    Only <code className="text-amber-300 font-mono">calendar.events</code> is requested for read/write. Full root calendar access is never requested. Tokens are never exposed to the client.
+                  </p>
+                </div>
+              </div>
             </div>
           </div>
         )}
