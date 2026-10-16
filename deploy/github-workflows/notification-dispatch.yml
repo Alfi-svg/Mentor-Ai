@@ -1,0 +1,43 @@
+name: Notification Dispatch Cron
+
+on:
+  schedule:
+    # Run every 15 minutes to trigger the persistent notification engine
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    name: Dispatch Due Notifications
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Mentor AI Dispatch Webhook
+        run: |
+          if [ -z "${{ secrets.NOTIFICATION_DISPATCH_SECRET }}" ]; then
+            echo "ERROR: NOTIFICATION_DISPATCH_SECRET is not configured in repository secrets." >&2
+            exit 1
+          fi
+
+          echo "Invoking protected notification dispatch endpoint..."
+          HTTP_STATUS=$(curl -s -o /tmp/dispatch_out.json -w "%{http_code}" \
+            --connect-timeout 60 \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 10 \
+            --retry-connrefused \
+            -X POST \
+            "https://mentor-ai-api-onzd.onrender.com/api/v1/notifications/dispatch" \
+            -H "X-Dispatch-Secret: ${{ secrets.NOTIFICATION_DISPATCH_SECRET }}" \
+            -H "Content-Type: application/json")
+
+          echo "Dispatch response HTTP status: $HTTP_STATUS"
+          if [ -f /tmp/dispatch_out.json ]; then
+            cat /tmp/dispatch_out.json
+            echo ""
+          fi
+
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "ERROR: Notification dispatch failed with status $HTTP_STATUS" >&2
+            exit 1
+          fi
+          echo "Notification dispatch succeeded."

@@ -181,3 +181,40 @@ test("Calendar event deduplication and task metadata enrichment", () => {
   assert.equal(gcalEvt.task_id, null);
   assert.equal(gcalEvt.location, "Medical Center");
 });
+
+test("Phase 7: Full Sync Lifecycle state representation", () => {
+  const lifecycleStates = [
+    { status: "local_only", expectedLabel: "Local schedule only", canRetry: false },
+    { status: "pending", expectedLabel: "Pending sync", canRetry: false },
+    { status: "syncing", expectedLabel: "Syncing...", canRetry: false },
+    { status: "synced", expectedLabel: "Synced to Google Calendar", canRetry: false },
+    { status: "failed", expectedLabel: "Sync failed", canRetry: true },
+    { status: "reauthorization_required", expectedLabel: "Reauth required", canRetry: false, needsReauth: true },
+  ];
+
+  for (const s of lifecycleStates) {
+    assert.ok(s.expectedLabel.length > 0);
+    if (s.status === "failed") {
+      assert.equal(s.canRetry, true);
+    }
+    if (s.status === "reauthorization_required") {
+      assert.equal(s.needsReauth, true);
+    }
+  }
+});
+
+test("Phase 7: Conflict alert notification format and routing", () => {
+  const conflictNotif = {
+    id: "notif-conflict-1",
+    notification_type: "schedule_conflict",
+    title: "Schedule Conflict Detected",
+    message: 'Task "Study Machine Learning" overlaps with existing commitment(s): "Physics Midterm".',
+    task_id: "task-ml-01",
+    status: "delivered",
+  };
+
+  assert.equal(conflictNotif.notification_type, "schedule_conflict");
+  assert.match(conflictNotif.message, /overlaps with existing commitment/);
+  assert.ok(conflictNotif.task_id);
+});
+

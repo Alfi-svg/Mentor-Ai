@@ -1,7 +1,7 @@
 """Task service handling business logic, status transitions, and audit records."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -11,6 +11,7 @@ from starlette import status
 from app.core.errors import AppException, EntityNotFoundException
 from app.core.logging import get_logger
 from app.db.models.action import AuditLog
+from app.db.models.calendar import CalendarEvent
 from app.db.models.task import Task
 from app.schemas.task import (
     SortOrder,
@@ -61,9 +62,12 @@ class TaskService:
         pref = payload.scheduling_preference
 
         # Determine scheduled start and end
-        if (pref == "manual" or pref is None) and payload.scheduled_start and payload.scheduled_end:
+        if (pref == "manual" or pref is None) and payload.scheduled_start:
             init_start = payload.scheduled_start
-            init_end = payload.scheduled_end
+            init_end = payload.scheduled_end or (init_start + timedelta(minutes=payload.duration_minutes))
+            if init_end <= init_start:
+                from app.core.errors import ValidationException
+                raise ValidationException(detail="Scheduled end time must be after scheduled start time.")
             init_status = "pending"
         else:
             init_start = None
@@ -120,6 +124,26 @@ class TaskService:
             await NotificationService.reconcile_task_lifecycle(
                 db=db, user_id=user_id, task=task, event="task_schedule_changed"
             )
+            # Check for overlapping fixed commitments and record schedule conflict alert
+            overlap_stmt = select(CalendarEvent).where(
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.start_time < task.scheduled_end,
+                CalendarEvent.end_time > task.scheduled_start,
+            )
+            overlap_res = await db.execute(overlap_stmt)
+            overlapping_events = list(overlap_res.scalars().all())
+            if overlapping_events:
+                ev_names = ", ".join(f'"{e.title}"' for e in overlapping_events[:2])
+                await NotificationService.schedule_notification(
+                    db=db,
+                    user_id=user_id,
+                    notification_type="schedule_conflict",
+                    title="Schedule Conflict Detected",
+                    message=f'Task "{task.title}" overlaps with existing commitment(s): {ev_names}.',
+                    scheduled_for=datetime.now(UTC),
+                    deduplication_key=f"task_conflict:{task.id}:{task.scheduled_start.isoformat()}",
+                    task_id=task.id,
+                )
         else:
             # Unscheduled
             await CalendarSyncService.ensure_schedule_block_for_task(db=db, task=task, user_id=user_id)
@@ -157,53 +181,80 @@ class TaskService:
         user_id: uuid.UUID,
         task: Task,
     ) -> tuple[Task, bool, str]:
-        """Internal solver invocation for scheduling a task."""
+        """Internal solver invocation for scheduling a task with multi-day forward search."""
         import zoneinfo
+        from datetime import timedelta
         from app.db.models.profile import Profile
         from app.services.scheduler.service import SchedulerService
 
         profile = await db.scalar(select(Profile).where(Profile.id == user_id))
-        user_tz_str = profile.timezone if profile and profile.timezone else "UTC"
+        user_tz_str = profile.timezone if profile and profile.timezone else "Asia/Dhaka"
         try:
             user_tz = zoneinfo.ZoneInfo(user_tz_str)
         except Exception:
             user_tz = zoneinfo.ZoneInfo("UTC")
 
         now_loc = datetime.now(user_tz)
+        now_utc = datetime.now(UTC)
+
+        start_date = now_loc.date()
         if task.deadline:
             dl_loc = (
                 task.deadline.astimezone(user_tz)
                 if task.deadline.tzinfo
                 else task.deadline.replace(tzinfo=UTC).astimezone(user_tz)
             )
-            target_date = dl_loc.date() if dl_loc.date() >= now_loc.date() else now_loc.date()
+            if dl_loc.date() < start_date or (task.deadline.replace(tzinfo=UTC) if not task.deadline.tzinfo else task.deadline) < now_utc:
+                task.calendar_sync_status = "unscheduled"
+                await db.commit()
+                await db.refresh(task)
+                dl_fmt = dl_loc.strftime("%b %d, %Y %I:%M %p")
+                return task, False, f"Task deadline ({dl_fmt}) has already passed. Task preserved in backlog as unscheduled."
+            end_date = min(dl_loc.date(), start_date + timedelta(days=14))
         else:
-            target_date = now_loc.date()
+            end_date = start_date + timedelta(days=7)
+
+        best_block = None
+        cur_date = start_date
 
         try:
-            proposal = await SchedulerService.generate_proposal(
-                db=db,
-                user_id=user_id,
-                target_date=target_date,
-                task_ids=[task.id],
-                enforce_buffer=True,
-            )
+            while cur_date <= end_date:
+                proposal = await SchedulerService.generate_proposal(
+                    db=db,
+                    user_id=user_id,
+                    target_date=cur_date,
+                    task_ids=[task.id],
+                    enforce_buffer=True,
+                )
 
-            matching_block = next(
-                (b for b in proposal.blocks if b.task_id == task.id and b.block_type == "task"),
-                None,
-            )
+                matching_block = next(
+                    (b for b in proposal.blocks if b.task_id == task.id and b.block_type == "task"),
+                    None,
+                )
 
-            if matching_block:
-                dl_utc = task.deadline if (task.deadline and task.deadline.tzinfo) else (task.deadline.replace(tzinfo=UTC) if task.deadline else None)
-                if dl_utc and matching_block.end_time > dl_utc:
-                    task.calendar_sync_status = "unscheduled"
-                    await db.commit()
-                    await db.refresh(task)
-                    return task, False, "Could not find an available slot before the task deadline."
+                if matching_block:
+                    dl_utc = (
+                        task.deadline
+                        if (task.deadline and task.deadline.tzinfo)
+                        else (task.deadline.replace(tzinfo=UTC) if task.deadline else None)
+                    )
+                    if dl_utc and matching_block.end_time > dl_utc:
+                        # Exceeds deadline on this day; later days will also exceed deadline
+                        break
 
-                task.scheduled_start = matching_block.start_time
-                task.scheduled_end = matching_block.end_time
+                    # If scheduling for today, slot must not start in the past
+                    if cur_date == start_date and matching_block.start_time <= now_utc:
+                        cur_date += timedelta(days=1)
+                        continue
+
+                    best_block = matching_block
+                    break
+
+                cur_date += timedelta(days=1)
+
+            if best_block:
+                task.scheduled_start = best_block.start_time
+                task.scheduled_end = best_block.end_time
                 task.calendar_sync_status = "pending"
                 task.updated_at = datetime.now(UTC)
                 await db.commit()
@@ -218,13 +269,25 @@ class TaskService:
                         db=db, user_id=user_id, task=task, event="task_deadline_changed"
                     )
 
-                time_str = matching_block.start_time.strftime("%b %d at %H:%M UTC")
-                return task, True, f"Task successfully scheduled for {time_str}."
+                time_str = best_block.start_time.astimezone(user_tz).strftime("%a, %b %d at %I:%M %p")
+                return task, True, f"Task successfully scheduled for {time_str} ({user_tz_str})."
             else:
                 task.calendar_sync_status = "unscheduled"
                 await db.commit()
                 await db.refresh(task)
-                return task, False, f"No available slot found within working hours on {target_date.strftime('%b %d')}."
+                if task.deadline:
+                    dl_str = task.deadline.astimezone(user_tz).strftime("%b %d, %I:%M %p")
+                    return (
+                        task,
+                        False,
+                        f"No available slot of {task.duration_minutes}m found within working hours before deadline ({dl_str}). Task preserved in backlog.",
+                    )
+                else:
+                    return (
+                        task,
+                        False,
+                        f"No available slot of {task.duration_minutes}m found within working hours over the next 7 days. Task preserved in backlog.",
+                    )
         except Exception as exc:
             logger.warning("Auto-scheduling failed", task_id=str(task.id), error=str(exc))
             task.calendar_sync_status = "unscheduled"
@@ -367,6 +430,15 @@ class TaskService:
                     .where(ScheduleBlock.task_id == task.id, ScheduleBlock.user_id == user_id)
                     .values(is_completed=(new_status == "completed"))
                 )
+
+        # Validate and normalize scheduled execution window
+        if "scheduled_start" in updates and updates["scheduled_start"] is not None:
+            if "scheduled_end" not in updates or updates["scheduled_end"] is None:
+                dur = updates.get("duration_minutes") or task.duration_minutes or 45
+                updates["scheduled_end"] = updates["scheduled_start"] + timedelta(minutes=dur)
+            if updates["scheduled_end"] <= updates["scheduled_start"]:
+                from app.core.errors import ValidationException
+                raise ValidationException(detail="Scheduled end time must be after scheduled start time.")
 
         # Apply other fields
         for field, value in updates.items():

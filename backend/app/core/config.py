@@ -69,7 +69,7 @@ class Settings(BaseSettings):
 
     # Persistent Notification Engine
     NOTIFICATION_DISPATCH_SECRET: str = Field(
-        default="mentor-ai-dispatch-sec-2026-v1",
+        default="",
         description="Secret token for triggering secured notification dispatch",
     )
     NOTIFICATION_DEFAULT_LEAD_TIME_MINUTES: int = Field(

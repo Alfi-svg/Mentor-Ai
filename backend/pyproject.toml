@@ -48,10 +48,12 @@ ignore = ["E501", "B008"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 addopts = "-ra -q --strict-markers"
-testpaths = ["../tests/backend"]
+testpaths = ["tests"]
+pythonpath = ["."]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
 
 [tool.mypy]
 python_version = "3.12"

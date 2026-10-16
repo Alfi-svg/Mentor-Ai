@@ -4,6 +4,15 @@
 
 export type TaskPriority = "P1" | "P2" | "P3" | "P4";
 export type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled" | "archived";
+export type CalendarSyncStatus =
+  | "unscheduled"
+  | "local_only"
+  | "unsynced"
+  | "pending"
+  | "syncing"
+  | "synced"
+  | "failed"
+  | "reauthorization_required";
 
 export interface TaskConstraints {
   can_split?: boolean;
@@ -31,7 +40,7 @@ export interface Task {
   scheduled_start?: string | null;
   scheduled_end?: string | null;
   google_calendar_event_id?: string | null;
-  calendar_sync_status?: string | null;
+  calendar_sync_status?: CalendarSyncStatus | string | null;
   calendar_sync_error?: string | null;
   last_synced_at?: string | null;
   created_at: string;
@@ -136,7 +145,7 @@ export interface CalendarEvent {
   task_id?: string | null;
   priority?: string | null;
   task_status?: string | null;
-  calendar_sync_status?: string | null;
+  calendar_sync_status?: CalendarSyncStatus | string | null;
 }
 
 export interface CalendarSyncResult {

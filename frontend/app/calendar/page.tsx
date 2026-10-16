@@ -1080,7 +1080,19 @@ export default function CalendarWorkspacePage() {
                         {selectedEvent.calendar_sync_status && (
                           <span className="block mt-1 font-mono text-[10px] text-zinc-400">
                             Calendar Sync Status:{" "}
-                            <span className="text-emerald-400 font-semibold">{selectedEvent.calendar_sync_status}</span>
+                            <span
+                              className={`font-semibold capitalize ${
+                                selectedEvent.calendar_sync_status === "synced"
+                                  ? "text-emerald-400"
+                                  : selectedEvent.calendar_sync_status === "reauthorization_required"
+                                  ? "text-amber-400"
+                                  : selectedEvent.calendar_sync_status === "failed"
+                                  ? "text-rose-400"
+                                  : "text-zinc-300"
+                              }`}
+                            >
+                              {selectedEvent.calendar_sync_status.replace("_", " ")}
+                            </span>
                           </span>
                         )}
                       </p>

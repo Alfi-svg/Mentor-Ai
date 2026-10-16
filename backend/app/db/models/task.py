@@ -58,7 +58,7 @@ class Task(Base):
     scheduled_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scheduled_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    calendar_sync_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unsynced")
+    calendar_sync_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unsynced")
     calendar_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     energy_level: Mapped[str] = mapped_column(String(10), nullable=False, default="medium")

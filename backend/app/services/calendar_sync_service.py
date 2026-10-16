@@ -1,10 +1,10 @@
 """Automatic Task-to-Calendar synchronization engine and bidirectional reconciliation."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -153,7 +153,7 @@ class CalendarSyncService:
             # Calendar not connected or sync disabled
             if task.scheduled_start and task.scheduled_end:
                 if task.calendar_sync_status != "synced" and not task.google_calendar_event_id:
-                    task.calendar_sync_status = "unsynced"
+                    task.calendar_sync_status = "local_only"
                     task.calendar_sync_error = None
                     await db.commit()
             else:
@@ -324,21 +324,29 @@ class CalendarSyncService:
             return True
 
         except CalendarProviderException as exc:
-            if exc.status_code == 403 or "insufficient" in str(exc).lower():
+            is_auth_error = (
+                exc.status_code in (401, 403)
+                or "insufficient" in str(exc).lower()
+                or "invalid_grant" in str(exc).lower()
+            )
+            if is_auth_error:
                 meta = dict(conn.metadata_json or {})
                 meta["scope_insufficient"] = True
                 conn.metadata_json = meta
+                task.calendar_sync_status = "reauthorization_required"
+                task.calendar_sync_error = (
+                    "Google Calendar permission missing or token expired. Please reconnect Google Calendar."
+                )
+            else:
+                task.calendar_sync_status = "failed"
+                task.calendar_sync_error = str(exc)
+
             logger.error(
                 "Failed to sync task to Google Calendar",
                 task_id=str(task.id),
                 user_id=str(user_id),
+                status=task.calendar_sync_status,
                 error=str(exc),
-            )
-            task.calendar_sync_status = "failed"
-            task.calendar_sync_error = (
-                "Google Calendar permission missing. Please reconnect Google Calendar."
-                if (exc.status_code == 403 or "insufficient" in str(exc).lower())
-                else str(exc)
             )
             await db.commit()
             return False
@@ -353,6 +361,49 @@ class CalendarSyncService:
             task.calendar_sync_error = str(exc)
             await db.commit()
             return False
+
+    @classmethod
+    async def sync_pending_and_failed_tasks(
+        cls, db: AsyncSession, limit: int = 50
+    ) -> int:
+        """Background durable synchronization worker for pending or recoverable failed tasks."""
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=15)
+
+        stmt = (
+            select(Task)
+            .where(
+                Task.is_archived.is_(False),
+                Task.status.in_(["pending", "in_progress"]),
+                Task.scheduled_start.isnot(None),
+                Task.scheduled_end.isnot(None),
+                or_(
+                    Task.calendar_sync_status.in_(["pending", "syncing"]),
+                    and_(
+                        Task.calendar_sync_status == "failed",
+                        or_(Task.last_synced_at.is_(None), Task.last_synced_at < cutoff),
+                    ),
+                ),
+            )
+            .limit(limit)
+        )
+        res = await db.execute(stmt)
+        tasks_to_sync = list(res.scalars().all())
+
+        synced_count = 0
+        for t in tasks_to_sync:
+            try:
+                success = await cls.sync_task_to_calendar(db=db, task=t, user_id=t.user_id)
+                if success:
+                    synced_count += 1
+            except Exception as e:
+                logger.warning(
+                    "Background task calendar sync failed",
+                    task_id=str(t.id),
+                    user_id=str(t.user_id),
+                    error=str(e),
+                )
+        return synced_count
 
     @classmethod
     async def reconcile_event_to_task(

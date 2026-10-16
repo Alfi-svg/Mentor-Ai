@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
   Archive,
@@ -632,6 +633,14 @@ export default function TasksPage() {
                             <CheckCircle2 className="h-3 w-3 text-emerald-400" />
                             Synced to Google Calendar
                           </span>
+                        ) : task.calendar_sync_status === "reauthorization_required" ? (
+                          <span
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                            title={task.calendar_sync_error || "Google Calendar permissions missing or token expired"}
+                          >
+                            <AlertTriangle className="h-3 w-3 text-amber-400" />
+                            Reauth required
+                          </span>
                         ) : task.calendar_sync_status === "failed" ? (
                           <span
                             className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20"
@@ -640,15 +649,15 @@ export default function TasksPage() {
                             <AlertTriangle className="h-3 w-3 text-rose-400" />
                             Sync failed
                           </span>
-                        ) : task.calendar_sync_status === "pending" ? (
+                        ) : task.calendar_sync_status === "pending" || task.calendar_sync_status === "syncing" ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">
                             <RefreshCw className="h-3 w-3 animate-spin text-sky-400" />
-                            Syncing...
+                            {task.calendar_sync_status === "syncing" ? "Syncing..." : "Pending sync"}
                           </span>
                         ) : task.scheduled_start ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-zinc-800 text-zinc-300 border border-zinc-700">
                             <Calendar className="h-3 w-3 text-zinc-400" />
-                            Scheduled locally
+                            Local schedule only
                           </span>
                         ) : null}
 
@@ -674,6 +683,17 @@ export default function TasksPage() {
                             <Calendar className="h-3 w-3 text-zinc-400" />
                             <span>Schedule</span>
                           </button>
+                        )}
+
+                        {task.calendar_sync_status === "reauthorization_required" && (
+                          <Link
+                            href="/settings/calendar"
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors"
+                            title="Open Google Calendar settings to grant required permissions"
+                          >
+                            <RefreshCw className="h-3 w-3 text-amber-400" />
+                            <span>Reconnect GCal</span>
+                          </Link>
                         )}
 
                         {task.calendar_sync_status === "failed" && task.scheduled_start && (

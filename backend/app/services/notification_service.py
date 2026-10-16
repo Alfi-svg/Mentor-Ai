@@ -492,6 +492,13 @@ class NotificationService:
         if claimed:
             await db.commit()
 
+        # Background durable task-to-calendar sync reconciliation pass
+        try:
+            from app.services.calendar_sync_service import CalendarSyncService
+            await CalendarSyncService.sync_pending_and_failed_tasks(db=db, limit=20)
+        except Exception as sync_err:
+            logger.warning("Background calendar sync pass encountered error", error=str(sync_err))
+
         duration = (time.perf_counter() - start_time) * 1000
         logger.info(
             "Notification dispatch run complete",
