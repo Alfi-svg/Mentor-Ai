@@ -603,9 +603,11 @@ export interface CopilotChatMessage {
 
 export interface CopilotMessageRequest {
   message: string;
+  input_mode?: "text" | "voice";
   client_timezone?: string;
   conversation_history?: CopilotChatMessage[];
   target_date?: string;
+  voice_preset?: string;
 }
 
 export interface CopilotScheduleItem {
@@ -669,6 +671,7 @@ export interface EmailDraftPreview {
   body: string;
   context_summary?: string | null;
   requires_confirmation: boolean;
+  approval_id?: string | null;
   status: "draft_ready" | "ambiguous_recipient" | "not_found" | "sent" | "failed";
   clarification_question?: string | null;
   candidates?: { email: string; name: string }[];
@@ -696,23 +699,32 @@ export interface StudentAccountabilitySummary {
 
 export interface CopilotResponse {
   reply: string;
+  spoken_reply?: string | null;
+  speech_audio_base64?: string | null;
+  speech_audio_format?: string | null;
+  input_mode?: "text" | "voice";
   intent: string;
+  tools_invoked?: string[];
+  tool_results?: Record<string, any>[];
   schedule_summary?: CopilotScheduleSummary | null;
   resources?: EducationalResource[] | null;
   email_draft?: EmailDraftPreview | null;
+  approval_id?: string | null;
   navigation?: CopilotNavigationTarget | null;
   accountability?: StudentAccountabilitySummary | null;
   code_line_count?: number | null;
-  verification_status: "verified" | "clarification_needed" | "unsupported" | "error";
+  verification_status: "verified" | "clarification_needed" | "unsupported" | "error" | "unconfigured";
 }
 
 export interface CopilotActionConfirmRequest {
   action_type: "send_email" | "reschedule_task";
+  approval_id?: string | null;
   email_payload?: {
     recipient_email: string;
     subject: string;
     body: string;
     thread_id?: string;
+    approval_id?: string;
   };
   task_payload?: Record<string, any>;
 }
@@ -722,6 +734,33 @@ export interface CopilotActionConfirmResponse {
   action_type: string;
   result_message: string;
   details?: Record<string, any> | null;
+}
+
+export interface CopilotVoiceOption {
+  id: string;
+  name: string;
+  perceived_sound: "masculine" | "feminine";
+  description: string;
+  sample_text: string;
+}
+
+export interface CopilotPreferences {
+  voice_preset: string;
+  voice_gender: "masculine" | "feminine";
+  auto_play_speech: boolean;
+  stt_engine: string;
+}
+
+export interface CopilotPreferencesUpdate {
+  voice_preset?: string;
+  voice_gender?: "masculine" | "feminine";
+  auto_play_speech?: boolean;
+  stt_engine?: string;
+}
+
+export interface CopilotTranscribeResponse {
+  transcript: string;
+  language?: string | null;
 }
 
 

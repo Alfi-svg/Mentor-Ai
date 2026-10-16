@@ -57,6 +57,13 @@ class Settings(BaseSettings):
         default=True, description="Whether to fall back to deterministic parser on API error"
     )
 
+    # OpenAI Intelligence Layer & Voice Copilot (Phase 9)
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = Field(default="gpt-4o-mini", description="OpenAI chat/agent model name")
+    OPENAI_TTS_MODEL: str = Field(default="tts-1", description="OpenAI text-to-speech model")
+    OPENAI_STT_MODEL: str = Field(default="whisper-1", description="OpenAI speech-to-text model")
+    OPENAI_DEFAULT_VOICE: str = Field(default="nova", description="Default OpenAI TTS voice preset")
+
     # Calendar Integration & OAuth
     CALENDAR_PROVIDER: str = Field(default="google_calendar", description="google_calendar | mock")
     GOOGLE_CLIENT_ID: str = ""
@@ -231,6 +238,15 @@ class Settings(BaseSettings):
     def has_push_credentials(self) -> bool:
         """Check whether browser push VAPID credentials are configured."""
         return bool(self.VAPID_PUBLIC_KEY and self.VAPID_PRIVATE_KEY)
+
+    @property
+    def has_openai_credentials(self) -> bool:
+        """Check whether valid OpenAI API credentials have been configured."""
+        return bool(
+            self.OPENAI_API_KEY
+            and self.OPENAI_API_KEY.strip()
+            and "placeholder" not in self.OPENAI_API_KEY.lower()
+        )
 
 
 # Singleton settings instance

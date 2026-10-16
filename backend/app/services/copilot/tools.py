@@ -19,9 +19,21 @@ from app.schemas.copilot import (
 )
 
 
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    """Guarantee datetime is timezone-aware in UTC, handling SQLite naive returns."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
 def _format_time_display(dt: datetime, tz: zoneinfo.ZoneInfo) -> str:
     """Format UTC datetime into user timezone display, e.g. 09:30 AM."""
-    dt_loc = dt.astimezone(tz)
+    dt_utc = _ensure_utc(dt)
+    if dt_utc is None:
+        return ""
+    dt_loc = dt_utc.astimezone(tz)
     return dt_loc.strftime("%I:%M %p").lstrip("0")
 
 
@@ -114,8 +126,9 @@ async def get_schedule_for_date(
             continue
 
         is_completed = (task.status == "completed") if task else False
+        task_dl = _ensure_utc(task.deadline) if task else None
         is_overdue = (
-            (task.deadline is not None and task.deadline < now_utc and not is_completed)
+            (task_dl is not None and task_dl < now_utc and not is_completed)
             if task
             else False
         )
@@ -208,7 +221,8 @@ async def get_schedule_for_date(
     next_action: str | None = None
     next_action_time: str | None = None
     for item in scheduled_items:
-        if item.raw_end > now_utc and not item.is_completed:
+        raw_e = _ensure_utc(item.raw_end)
+        if raw_e and raw_e > now_utc and not item.is_completed:
             next_action = item.title
             next_action_time = item.start_time
             break
@@ -367,3 +381,465 @@ async def get_completed_tasks(
         }
         for t in tasks
     ]
+
+
+# -----------------------------------------------------------------------------
+# Phase 9: OpenAI Agent Tools (Tasks, Google Calendar, Gmail, Education)
+# -----------------------------------------------------------------------------
+
+async def get_today_tasks(
+    db: AsyncSession, user_id: uuid.UUID, user_tz_str: str = "Asia/Dhaka"
+) -> dict[str, Any]:
+    """Retrieve today's tasks and scheduled blocks with distinction between scheduled and unscheduled."""
+    summary = await get_today_schedule(db=db, user_id=user_id, user_tz_str=user_tz_str)
+    tasks_only = [item for item in summary.scheduled_items if item.item_type == "task"]
+    return {
+        "date": summary.target_date,
+        "timezone": summary.timezone,
+        "scheduled_tasks_count": len(tasks_only),
+        "scheduled_tasks": [
+            {
+                "id": t.id,
+                "task_id": str(t.task_id) if t.task_id else None,
+                "title": t.title,
+                "start_time": t.start_time,
+                "end_time": t.end_time,
+                "status": t.status,
+                "priority": t.priority,
+                "is_completed": t.is_completed,
+                "is_overdue": t.is_overdue,
+            }
+            for t in tasks_only
+        ],
+        "unscheduled_tasks": summary.unscheduled_tasks,
+        "deadlines_today": summary.deadlines,
+        "next_focus": summary.next_action,
+        "next_focus_time": summary.next_action_time,
+    }
+
+
+async def get_task_details(
+    db: AsyncSession, user_id: uuid.UUID, task_id: str
+) -> dict[str, Any]:
+    """Retrieve full details of a specific task by its UUID."""
+    try:
+        t_uuid = uuid.UUID(task_id)
+    except ValueError:
+        return {"error": f"Invalid task ID format: {task_id}"}
+
+    query = select(Task).where(Task.id == t_uuid, Task.user_id == user_id)
+    task = await db.scalar(query)
+    if not task:
+        return {"error": f"Task with ID {task_id} not found."}
+
+    return {
+        "id": str(task.id),
+        "title": task.title,
+        "description": task.description,
+        "status": task.status,
+        "priority": task.priority,
+        "duration_minutes": task.duration_minutes,
+        "deadline": task.deadline.isoformat() if task.deadline else None,
+        "scheduled_start": task.scheduled_start.isoformat() if task.scheduled_start else None,
+        "scheduled_end": task.scheduled_end.isoformat() if task.scheduled_end else None,
+        "calendar_sync_status": task.calendar_sync_status,
+        "is_archived": task.is_archived,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
+
+
+async def get_task_summary(
+    db: AsyncSession, user_id: uuid.UUID, user_tz_str: str = "Asia/Dhaka"
+) -> dict[str, Any]:
+    """Retrieve aggregated task metrics, study streak, completed today, and overdue count."""
+    from app.services.copilot.accountability import StudentAccountabilityService
+
+    accountability = await StudentAccountabilityService.get_accountability_summary(
+        db=db, user_id=user_id
+    )
+    overdue_items = await get_overdue_tasks(db=db, user_id=user_id, user_tz_str=user_tz_str)
+    upcoming = await get_upcoming_deadlines(db=db, user_id=user_id, user_tz_str=user_tz_str, days=7)
+
+    return {
+        "streak_days": accountability.streak_days,
+        "completed_today": accountability.completed_today_count,
+        "missed_sessions_count": accountability.missed_sessions_count,
+        "overdue_tasks_count": len(overdue_items),
+        "upcoming_deadlines_next_7_days": len(upcoming),
+        "supportive_advice": accountability.supportive_message,
+    }
+
+
+# Calendar Tools
+async def get_today_calendar_events(
+    db: AsyncSession, user_id: uuid.UUID, user_tz_str: str = "Asia/Dhaka"
+) -> dict[str, Any]:
+    """Retrieve external Google Calendar events for today in user's timezone."""
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz_str)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+
+    now_loc = datetime.now(UTC).astimezone(tz)
+    today_str = now_loc.date().isoformat()
+    return await get_calendar_events_for_date(db, user_id, today_str, user_tz_str)
+
+
+async def get_calendar_events_for_date(
+    db: AsyncSession, user_id: uuid.UUID, date_str: str, user_tz_str: str = "Asia/Dhaka"
+) -> dict[str, Any]:
+    """Retrieve calendar events for a specific date (YYYY-MM-DD) in user's timezone."""
+    from app.services.calendar.service import CalendarService
+
+    status = await CalendarService.get_status(user_id=user_id, db=db)
+    is_connected = status.is_connected and status.has_sufficient_scopes
+
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz_str)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+
+    try:
+        target_date = date.fromisoformat(date_str)
+    except ValueError:
+        return {"error": f"Invalid date format: {date_str}. Expected YYYY-MM-DD."}
+
+    start_loc = datetime.combine(target_date, time(0, 0, 0), tzinfo=tz)
+    end_loc = datetime.combine(target_date, time(23, 59, 59), tzinfo=tz)
+    start_utc = start_loc.astimezone(UTC)
+    end_utc = end_loc.astimezone(UTC)
+
+    # If connected, trigger quick sync to ensure fresh calendar projection
+    if is_connected:
+        try:
+            await CalendarService.sync_events(
+                user_id=user_id, start_time=start_utc, end_time=end_utc, db=db
+            )
+        except Exception as exc:
+            pass  # Fall back to existing cached records if provider sync times out
+
+    events_query = (
+        select(CalendarEvent)
+        .where(
+            CalendarEvent.user_id == user_id,
+            CalendarEvent.start_time >= start_utc,
+            CalendarEvent.start_time <= end_utc,
+        )
+        .order_by(CalendarEvent.start_time.asc())
+    )
+    res = await db.scalars(events_query)
+    events = list(res.all())
+
+    items = [
+        {
+            "id": str(e.id),
+            "title": e.title,
+            "description": e.description,
+            "start_time": _format_time_display(e.start_time, tz),
+            "end_time": _format_time_display(e.end_time, tz),
+            "raw_start": e.start_time.isoformat(),
+            "raw_end": e.end_time.isoformat(),
+            "location": e.location,
+            "source": e.source,
+            "is_all_day": e.is_all_day,
+        }
+        for e in events
+    ]
+
+    return {
+        "date": date_str,
+        "is_connected": is_connected,
+        "account_email": status.account_email,
+        "events_count": len(items),
+        "events": items,
+        "message": None if is_connected else (status.message or "Google Calendar is not connected. Connect in Settings."),
+    }
+
+
+async def get_upcoming_calendar_events(
+    db: AsyncSession, user_id: uuid.UUID, user_tz_str: str = "Asia/Dhaka", days: int = 7
+) -> dict[str, Any]:
+    """Retrieve upcoming calendar events for the next N days."""
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz_str)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+
+    now_utc = datetime.now(UTC)
+    end_utc = now_utc + timedelta(days=days)
+
+    events_query = (
+        select(CalendarEvent)
+        .where(
+            CalendarEvent.user_id == user_id,
+            CalendarEvent.start_time >= now_utc,
+            CalendarEvent.start_time <= end_utc,
+        )
+        .order_by(CalendarEvent.start_time.asc())
+    )
+    res = await db.scalars(events_query)
+    events = list(res.all())
+
+    return {
+        "upcoming_days": days,
+        "total_events": len(events),
+        "events": [
+            {
+                "id": str(e.id),
+                "title": e.title,
+                "start_time": _format_time_display(e.start_time, tz),
+                "end_time": _format_time_display(e.end_time, tz),
+                "date": e.start_time.astimezone(tz).date().isoformat(),
+                "location": e.location,
+                "is_all_day": e.is_all_day,
+            }
+            for e in events
+        ],
+    }
+
+
+async def get_calendar_event_details(
+    db: AsyncSession, user_id: uuid.UUID, event_id: str
+) -> dict[str, Any]:
+    """Retrieve details for a specific calendar event."""
+    try:
+        e_uuid = uuid.UUID(event_id)
+    except ValueError:
+        return {"error": f"Invalid event ID: {event_id}"}
+
+    query = select(CalendarEvent).where(CalendarEvent.id == e_uuid, CalendarEvent.user_id == user_id)
+    ev = await db.scalar(query)
+    if not ev:
+        return {"error": f"Calendar event {event_id} not found."}
+
+    return {
+        "id": str(ev.id),
+        "title": ev.title,
+        "description": ev.description,
+        "start_time": ev.start_time.isoformat(),
+        "end_time": ev.end_time.isoformat(),
+        "location": ev.location,
+        "source": ev.source,
+        "external_id": ev.external_id,
+    }
+
+
+# Gmail Tools
+async def search_gmail_messages(
+    db: AsyncSession, user_id: uuid.UUID, query: str | None = None, limit: int = 10
+) -> dict[str, Any]:
+    """Search or list recent Gmail messages for authenticated user."""
+    from app.services.gmail.service import GmailService
+
+    status = await GmailService.get_status(user_id=user_id, db=db)
+    if not status.is_connected or not status.has_sufficient_scopes:
+        return {
+            "is_connected": False,
+            "messages": [],
+            "unread_count": 0,
+            "message": "Gmail account is not connected or missing read scopes. Please connect Gmail in Settings.",
+        }
+
+    try:
+        messages = await GmailService.list_messages(
+            user_id=user_id, db=db, query=query, limit=limit
+        )
+        items = []
+        unread_count = 0
+        for m in messages:
+            is_unread = "UNREAD" in (m.labels or [])
+            if is_unread:
+                unread_count += 1
+            items.append(
+                {
+                    "id": m.id,
+                    "thread_id": m.thread_id,
+                    "sender": m.sender,
+                    "subject": m.subject,
+                    "date": m.date,
+                    "snippet": m.snippet,
+                    "is_unread": is_unread,
+                }
+            )
+
+        return {
+            "is_connected": True,
+            "account_email": status.account_email,
+            "query": query,
+            "total_fetched": len(items),
+            "unread_count": unread_count,
+            "messages": items,
+        }
+    except Exception as exc:
+        return {
+            "is_connected": True,
+            "messages": [],
+            "error": str(exc),
+            "message": f"Could not retrieve Gmail messages: {exc}",
+        }
+
+
+async def get_gmail_message(
+    db: AsyncSession, user_id: uuid.UUID, message_id: str
+) -> dict[str, Any]:
+    """Fetch and sanitize complete detail of a specific Gmail message."""
+    from app.services.gmail.service import GmailService
+
+    try:
+        detail = await GmailService.get_message(user_id=user_id, message_id=message_id, db=db)
+        return {
+            "id": detail.id,
+            "thread_id": detail.thread_id,
+            "sender": detail.sender,
+            "subject": detail.subject,
+            "date": detail.date,
+            "snippet": detail.snippet,
+            "body_plain": detail.body_plain[:2000] if detail.body_plain else "",
+            "labels": detail.labels,
+        }
+    except Exception as exc:
+        return {"error": f"Failed to retrieve email {message_id}: {exc}"}
+
+
+async def get_gmail_thread(
+    db: AsyncSession, user_id: uuid.UUID, thread_id: str
+) -> dict[str, Any]:
+    """Fetch messages belonging to a Gmail thread."""
+    from app.services.gmail.service import GmailService
+
+    try:
+        messages = await GmailService.list_messages(
+            user_id=user_id, db=db, query=f"thread:{thread_id}", limit=10
+        )
+        return {
+            "thread_id": thread_id,
+            "message_count": len(messages),
+            "messages": [
+                {
+                    "id": m.id,
+                    "sender": m.sender,
+                    "subject": m.subject,
+                    "date": m.date,
+                    "snippet": m.snippet,
+                }
+                for m in messages
+            ],
+        }
+    except Exception as exc:
+        return {"error": f"Failed to retrieve thread {thread_id}: {exc}"}
+
+
+async def summarize_gmail_message(
+    db: AsyncSession, user_id: uuid.UUID, message_id: str
+) -> dict[str, Any]:
+    """Summarize an email distinguishing verified facts from interpretations."""
+    from app.services.gmail.service import GmailService
+
+    try:
+        summary_res = await GmailService.summarize_message(
+            user_id=user_id, message_id=message_id, db=db
+        )
+        return {
+            "message_id": summary_res.message_id,
+            "sender": summary_res.sender,
+            "subject": summary_res.subject,
+            "verified_facts": summary_res.verified_facts,
+            "summary": summary_res.ai_interpretation,
+        }
+    except Exception as exc:
+        return {"error": f"Could not summarize email {message_id}: {exc}"}
+
+
+async def prepare_gmail_reply_tool(
+    db: AsyncSession, user_id: uuid.UUID, target_query_or_recipient: str, reply_intent: str
+) -> dict[str, Any]:
+    """Draft a contextual reply to an email thread. Requires explicit confirmation before sending."""
+    from app.services.copilot.email_copilot import CopilotEmailService
+
+    prompt = f"Reply to {target_query_or_recipient}: {reply_intent}"
+    draft = await CopilotEmailService.prepare_email_reply(db=db, user_id=user_id, prompt=prompt)
+
+    return {
+        "status": draft.status,
+        "requires_confirmation": True,
+        "approval_id": draft.approval_id,
+        "thread_id": draft.thread_id,
+        "recipient_email": draft.recipient_email,
+        "recipient_name": draft.recipient_name,
+        "subject": draft.subject,
+        "body": draft.body,
+        "context_summary": draft.context_summary,
+        "clarification_question": draft.clarification_question,
+        "candidates": draft.candidates,
+    }
+
+
+async def confirm_and_send_gmail_reply_tool(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    approval_id: str,
+    recipient_email: str,
+    subject: str,
+    body: str,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """Send an email only after verifying the user's explicit confirmation token."""
+    from app.services.copilot.email_copilot import CopilotEmailService
+
+    success, message, details = await CopilotEmailService.send_confirmed_email(
+        db=db,
+        user_id=user_id,
+        recipient_email=recipient_email,
+        subject=subject,
+        body=body,
+        thread_id=thread_id,
+        approval_id=approval_id,
+    )
+    return {
+        "success": success,
+        "message": message,
+        "details": details,
+    }
+
+
+# Educational & Accountability Tools
+def search_educational_resources_tool(query: str) -> dict[str, Any]:
+    """Search verified educational courses, lectures, videos, and documentation."""
+    from app.services.copilot.search import EducationalSearchService
+
+    resources, topic = EducationalSearchService.search_educational_resources(query)
+    return {
+        "topic": topic,
+        "count": len(resources),
+        "resources": [
+            {
+                "title": r.title,
+                "url": r.url,
+                "platform": r.platform,
+                "topic": r.topic,
+                "difficulty": r.difficulty,
+                "is_free": r.is_free,
+                "description": r.description,
+                "why_recommended": r.why_recommended,
+            }
+            for r in resources
+        ],
+    }
+
+
+async def get_student_accountability_tool(
+    db: AsyncSession, user_id: uuid.UUID
+) -> dict[str, Any]:
+    """Retrieve student study streak, missed sessions, and supportive recovery recommendations."""
+    from app.services.copilot.accountability import StudentAccountabilityService
+
+    accountability = await StudentAccountabilityService.get_accountability_summary(
+        db=db, user_id=user_id
+    )
+    return {
+        "streak_days": accountability.streak_days,
+        "completed_today_count": accountability.completed_today_count,
+        "missed_sessions_count": accountability.missed_sessions_count,
+        "supportive_message": accountability.supportive_message,
+        "suggested_recovery_task": accountability.suggested_recovery_task,
+    }

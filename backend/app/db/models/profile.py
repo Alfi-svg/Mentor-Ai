@@ -113,6 +113,16 @@ class UserPreferences(Base):
             "quiet_hours_end": "08:00:00",
         },
     )
+    copilot_settings: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        default=lambda: {
+            "voice_preset": "nova",
+            "voice_gender": "feminine",
+            "auto_play_speech": True,
+            "stt_engine": "openai",
+        },
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

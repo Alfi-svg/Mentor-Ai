@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.schemas.copilot import EmailDraftPreview
+from app.services.copilot.approval import generate_action_approval, verify_action_approval
 from app.services.gmail.base import GmailProviderException
 from app.services.gmail.models import GmailSendPayload
 from app.services.gmail.sanitizer import sanitize_email_text
@@ -165,15 +166,28 @@ class CopilotEmailService:
         )
 
         context_summary = f"Replying to email from {sender_name} with subject '{subject}'. Context: \"{snippet[:120]}...\""
+        thread_id = target_summary.thread_id or target_summary.id
+
+        approval_id = generate_action_approval(
+            user_id=user_id,
+            action_type="send_email",
+            payload={
+                "recipient_email": sender_email,
+                "subject": reply_subject,
+                "body": draft_body,
+                "thread_id": thread_id,
+            },
+        )
 
         return EmailDraftPreview(
-            thread_id=target_summary.thread_id or target_summary.id,
+            thread_id=thread_id,
             recipient_email=sender_email,
             recipient_name=sender_name,
             subject=reply_subject,
             body=draft_body,
             context_summary=context_summary,
             requires_confirmation=True,
+            approval_id=approval_id,
             status="draft_ready",
         )
 
@@ -186,10 +200,29 @@ class CopilotEmailService:
         subject: str,
         body: str,
         thread_id: str | None = None,
+        approval_id: str | None = None,
     ) -> tuple[bool, str, dict[str, Any]]:
         """Send an explicitly user-confirmed email draft through GmailService."""
         if not recipient_email or "@" not in recipient_email:
             return False, "Invalid recipient email address.", {}
+
+        # If approval_id is provided, verify token authenticity, expiration, and payload integrity
+        if approval_id:
+            payload_data = {
+                "recipient_email": recipient_email,
+                "subject": subject,
+                "body": body,
+                "thread_id": thread_id,
+            }
+            valid, reason = verify_action_approval(
+                approval_id=approval_id,
+                user_id=user_id,
+                expected_action_type="send_email",
+                current_payload=payload_data,
+            )
+            if not valid:
+                logger.warning("Email send blocked: invalid approval token", reason=reason, user_id=str(user_id))
+                return False, f"Send authorization failed: {reason}", {}
 
         payload = GmailSendPayload(
             to=recipient_email,

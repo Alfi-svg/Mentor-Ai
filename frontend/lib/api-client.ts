@@ -739,6 +739,55 @@ export const apiClient = {
         { method: "POST" }
       );
     },
+
+    async transcribeAudio(
+      file: Blob,
+      filename: string = "recording.webm"
+    ): Promise<import("./types").CopilotTranscribeResponse> {
+      const formData = new FormData();
+      formData.append("file", file, filename);
+      return request<import("./types").CopilotTranscribeResponse>("/copilot/transcribe", {
+        method: "POST",
+        body: formData,
+      });
+    },
+
+    async getSpeechAudio(text: string, voice?: string): Promise<Blob> {
+      const url = `${API_BASE_URL}/copilot/speech`;
+      const token = getStoredToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text, voice }),
+      });
+      if (!res.ok) {
+        throw new Error(`Speech synthesis failed with status ${res.status}`);
+      }
+      return res.blob();
+    },
+
+    async getVoices(): Promise<import("./types").CopilotVoiceOption[]> {
+      return request<import("./types").CopilotVoiceOption[]>("/copilot/voices");
+    },
+
+    async getPreferences(): Promise<import("./types").CopilotPreferences> {
+      return request<import("./types").CopilotPreferences>("/copilot/preferences");
+    },
+
+    async updatePreferences(
+      payload: import("./types").CopilotPreferencesUpdate
+    ): Promise<import("./types").CopilotPreferences> {
+      return request<import("./types").CopilotPreferences>("/copilot/preferences", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+    },
   },
 };
 

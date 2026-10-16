@@ -21,12 +21,18 @@ class CopilotMessageRequest(BaseModel):
     """User input prompt submitted to the Copilot (via text or voice transcript)."""
 
     message: str = Field(..., min_length=1, description="User instruction or question")
+    input_mode: Literal["text", "voice"] = Field(
+        default="text", description="Originating interaction mode: text or voice"
+    )
     client_timezone: str = Field(default="Asia/Dhaka", description="User IANA timezone")
     conversation_history: list[CopilotChatMessage] = Field(
         default_factory=list, description="Prior conversation messages for context"
     )
     target_date: str | None = Field(
         default=None, description="Optional target date in YYYY-MM-DD format"
+    )
+    voice_preset: str | None = Field(
+        default=None, description="Optional override TTS voice preset (e.g. nova, echo)"
     )
 
 
@@ -86,6 +92,7 @@ class EmailDraftPreview(BaseModel):
     body: str
     context_summary: str | None = None
     requires_confirmation: bool = True
+    approval_id: str | None = None
     status: Literal["draft_ready", "ambiguous_recipient", "not_found", "sent", "failed"] = (
         "draft_ready"
     )
@@ -116,18 +123,39 @@ class CopilotResponse(BaseModel):
     """Complete structured response envelope returned by CopilotService."""
 
     reply: str = Field(description="Assistant natural conversational response")
+    spoken_reply: str | None = Field(
+        default=None, description="Concise text optimized for text-to-speech reading"
+    )
+    speech_audio_base64: str | None = Field(
+        default=None, description="Base64-encoded audio when voice mode is active"
+    )
+    speech_audio_format: str | None = Field(
+        default="audio/mpeg", description="MIME format of synthesized audio"
+    )
+    input_mode: Literal["text", "voice"] = Field(
+        default="text", description="Echo of request interaction mode"
+    )
     intent: str = Field(
         default="general_guidance",
         description="Classified intent, e.g. schedule_inquiry, educational_search, etc.",
     )
+    tools_invoked: list[str] = Field(
+        default_factory=list, description="Names of tools invoked by the agent"
+    )
+    tool_results: list[dict[str, Any]] = Field(
+        default_factory=list, description="Structured tool outputs"
+    )
     schedule_summary: CopilotScheduleSummary | None = None
     resources: list[EducationalResource] | None = None
     email_draft: EmailDraftPreview | None = None
+    approval_id: str | None = Field(
+        default=None, description="Signed approval ID for consequential action confirmation"
+    )
     navigation: CopilotNavigationTarget | None = None
     accountability: StudentAccountabilitySummary | None = None
     code_line_count: int | None = None
     verification_status: Literal[
-        "verified", "clarification_needed", "unsupported", "error"
+        "verified", "clarification_needed", "unsupported", "error", "unconfigured"
     ] = "verified"
 
 
@@ -135,6 +163,9 @@ class CopilotActionConfirmRequest(BaseModel):
     """Request to execute an explicitly confirmed consequential Copilot action."""
 
     action_type: Literal["send_email", "reschedule_task"]
+    approval_id: str | None = Field(
+        default=None, description="Cryptographically signed approval token"
+    )
     email_payload: dict[str, Any] | None = None
     task_payload: dict[str, Any] | None = None
 
@@ -146,3 +177,49 @@ class CopilotActionConfirmResponse(BaseModel):
     action_type: str
     result_message: str
     details: dict[str, Any] | None = None
+
+
+class CopilotVoiceOption(BaseModel):
+    """Available OpenAI TTS voice preset with description and perceived characteristics."""
+
+    id: str = Field(description="Voice preset identifier (e.g. nova, echo, onyx, shimmer)")
+    name: str = Field(description="Human-friendly voice name")
+    perceived_sound: Literal["masculine", "feminine"] = Field(
+        description="Perceived sound tone (not identity)"
+    )
+    description: str = Field(description="Acoustic description, e.g. 'Warm and clear'")
+    sample_text: str = Field(
+        default="Hello! I am Mentor, your educational assistant. How can I help with your studies today?"
+    )
+
+
+class CopilotPreferences(BaseModel):
+    """Persisted user Copilot settings."""
+
+    voice_preset: str = "nova"
+    voice_gender: Literal["masculine", "feminine"] = "feminine"
+    auto_play_speech: bool = True
+    stt_engine: str = "openai"
+
+
+class CopilotPreferencesUpdate(BaseModel):
+    """Payload to update user Copilot settings."""
+
+    voice_preset: str | None = None
+    voice_gender: Literal["masculine", "feminine"] | None = None
+    auto_play_speech: bool | None = None
+    stt_engine: str | None = None
+
+
+class CopilotTranscribeResponse(BaseModel):
+    """Response returned from speech-to-text audio transcription."""
+
+    transcript: str
+    language: str | None = None
+
+
+class CopilotSpeechRequest(BaseModel):
+    """Request to synthesize spoken audio from text."""
+
+    text: str = Field(..., min_length=1, max_length=2000)
+    voice: str | None = Field(default=None, description="Voice preset (e.g. echo, nova)")

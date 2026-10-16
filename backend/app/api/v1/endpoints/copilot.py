@@ -1,25 +1,33 @@
 """Copilot API endpoints for conversational educational guidance, schedule intelligence, and voice assistant."""
 
+import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
 from app.core.security import AuthenticatedUser, get_current_user
+from app.db.models.profile import UserPreferences
 from app.db.session import get_db
 from app.schemas.copilot import (
     CopilotActionConfirmRequest,
     CopilotActionConfirmResponse,
     CopilotMessageRequest,
+    CopilotPreferences,
+    CopilotPreferencesUpdate,
     CopilotResponse,
     CopilotScheduleSummary,
+    CopilotSpeechRequest,
+    CopilotTranscribeResponse,
+    CopilotVoiceOption,
     StudentAccountabilitySummary,
 )
 from app.services.copilot.accountability import StudentAccountabilityService
 from app.services.copilot.email_copilot import CopilotEmailService
-from app.services.copilot.service import CopilotService
 from app.services.copilot.tools import get_today_schedule, resolve_user_timezone
+from app.services.copilot_agent import CopilotAgent
 
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
@@ -36,10 +44,20 @@ async def process_copilot_message(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> CopilotResponse:
     """Orchestrate schedule intelligence, educational resource search, email drafting, or programming tutoring."""
-    return await CopilotService.process_message(
+    stmt = select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+    prefs = await db.scalar(stmt)
+    copilot_settings = prefs.copilot_settings if prefs else None
+    voice_pref = "nova"
+    if copilot_settings and isinstance(copilot_settings, dict):
+        voice_pref = copilot_settings.get("voice_preset", "nova")
+    if payload.voice_preset:
+        voice_pref = payload.voice_preset
+
+    return await CopilotAgent.process_message(
         db=db,
         user_id=current_user.id,
         req=payload,
+        preferred_voice=voice_pref,
     )
 
 
@@ -61,6 +79,7 @@ async def confirm_copilot_action(
         subject = data.get("subject", "")
         body = data.get("body", "")
         thread_id = data.get("thread_id")
+        approval_id = payload.approval_id or data.get("approval_id")
 
         if not recipient or not body:
             return CopilotActionConfirmResponse(
@@ -76,6 +95,7 @@ async def confirm_copilot_action(
             subject=subject,
             body=body,
             thread_id=thread_id,
+            approval_id=approval_id,
         )
         return CopilotActionConfirmResponse(
             success=success,
@@ -89,6 +109,143 @@ async def confirm_copilot_action(
         action_type=payload.action_type,
         result_message=f"Unsupported action type: {payload.action_type}",
     )
+
+
+@router.post(
+    "/transcribe",
+    response_model=CopilotTranscribeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Transcribe audio recording via OpenAI Whisper speech-to-text",
+)
+async def transcribe_audio_endpoint(
+    file: Annotated[UploadFile, File(...)],
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> CopilotTranscribeResponse:
+    """Convert spoken voice audio into text transcript."""
+    contents = await file.read()
+    if len(contents) > 25 * 1024 * 1024:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Audio recording exceeds 25MB maximum upload limit.",
+        )
+    if not contents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Empty audio recording submitted.",
+        )
+    try:
+        return await CopilotAgent.transcribe_audio(contents, filename=file.filename or "recording.webm")
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(val_err),
+        )
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Audio transcription failed: {err}",
+        )
+
+
+@router.post(
+    "/speech",
+    status_code=status.HTTP_200_OK,
+    summary="Synthesize speech audio from text using OpenAI TTS",
+)
+async def synthesize_speech_endpoint(
+    payload: CopilotSpeechRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> Response:
+    """Generate audio stream for spoken response."""
+    try:
+        audio_bytes = await CopilotAgent.synthesize_speech(
+            text=payload.text, voice_preset=payload.voice or "nova"
+        )
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(val_err),
+        )
+    except Exception as err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Speech synthesis failed: {err}",
+        )
+
+
+@router.get(
+    "/voices",
+    response_model=list[CopilotVoiceOption],
+    status_code=status.HTTP_200_OK,
+    summary="List available voice options with perceived sound and acoustic descriptions",
+)
+async def get_available_voices(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> list[CopilotVoiceOption]:
+    """Retrieve supported voice options for Copilot preferences."""
+    return CopilotAgent.get_supported_voices()
+
+
+@router.get(
+    "/preferences",
+    response_model=CopilotPreferences,
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve current user Copilot voice and interaction settings",
+)
+async def get_copilot_preferences(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CopilotPreferences:
+    """Retrieve persisted Copilot voice preferences."""
+    stmt = select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+    prefs = await db.scalar(stmt)
+    if not prefs or not prefs.copilot_settings:
+        return CopilotPreferences()
+    return CopilotPreferences(**prefs.copilot_settings)
+
+
+@router.put(
+    "/preferences",
+    response_model=CopilotPreferences,
+    status_code=status.HTTP_200_OK,
+    summary="Update user Copilot voice and interaction settings",
+)
+async def update_copilot_preferences(
+    payload: CopilotPreferencesUpdate,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CopilotPreferences:
+    """Update and persist Copilot voice preferences."""
+    stmt = select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+    prefs = await db.scalar(stmt)
+    if not prefs:
+        prefs = UserPreferences(
+            id=uuid.uuid4(),
+            user_id=current_user.id,
+            copilot_settings={
+                "voice_preset": "nova",
+                "voice_gender": "feminine",
+                "auto_play_speech": True,
+                "stt_engine": "openai",
+            },
+        )
+        db.add(prefs)
+
+    current_settings = dict(prefs.copilot_settings or {})
+    if payload.voice_preset is not None:
+        current_settings["voice_preset"] = payload.voice_preset
+    if payload.voice_gender is not None:
+        current_settings["voice_gender"] = payload.voice_gender
+    if payload.auto_play_speech is not None:
+        current_settings["auto_play_speech"] = payload.auto_play_speech
+    if payload.stt_engine is not None:
+        current_settings["stt_engine"] = payload.stt_engine
+
+    prefs.copilot_settings = current_settings
+    await db.commit()
+    await db.refresh(prefs)
+    return CopilotPreferences(**prefs.copilot_settings)
 
 
 @router.get(
