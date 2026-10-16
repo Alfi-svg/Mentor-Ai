@@ -196,6 +196,32 @@ class ActionService:
                 else:
                     verified = False
                     verification_details = {"error": "Record could not be verified in database"}
+            elif action.action_type == "send_email":
+                payload = action.payload
+                from app.services.gmail.models import GmailSendPayload
+                from app.services.gmail.service import GmailService
+
+                send_payload = GmailSendPayload(
+                    to=payload["to"],
+                    subject=payload["subject"],
+                    body=payload["body"],
+                    thread_id=payload.get("thread_id"),
+                    source_reference=payload.get("source_reference"),
+                )
+                send_result = await GmailService.send_email_verified(
+                    user_id=user_id,
+                    payload=send_payload,
+                    db=db,
+                )
+                verified = send_result.verified
+                verification_details = {
+                    "message_id": send_result.message_id,
+                    "thread_id": send_result.thread_id,
+                    "to": send_result.to,
+                    "subject": send_result.subject,
+                    "sent_at": send_result.sent_at.isoformat(),
+                    "verified_at": datetime.now(UTC).isoformat(),
+                }
             else:
                 # Default supported domain action execution
                 verified = True
@@ -289,6 +315,22 @@ class ActionService:
                 status="failed",
                 verified=False,
                 error_message="Referenced calendar event no longer exists in database.",
+            )
+
+        if action.action_type == "send_email" and action.verification_result:
+            msg_id = action.verification_result.get("message_id")
+            if msg_id:
+                return ActionVerifyResponse(
+                    action_id=action.id,
+                    status="completed",
+                    verified=True,
+                    details=action.verification_result,
+                )
+            return ActionVerifyResponse(
+                action_id=action.id,
+                status="failed",
+                verified=False,
+                error_message="Email delivery verification failed: missing confirmed message ID.",
             )
 
         return ActionVerifyResponse(

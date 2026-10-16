@@ -34,7 +34,7 @@ class ExternalConnection(Base):
             name="chk_connection_status",
         ),
         CheckConstraint(
-            "provider IN ('google_calendar', 'ical')",
+            "provider IN ('google_calendar', 'ical', 'google_gmail', 'gmail')",
             name="chk_connection_provider",
         ),
         UniqueConstraint("user_id", "provider", name="uq_user_provider_connection"),

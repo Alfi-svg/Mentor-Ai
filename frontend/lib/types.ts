@@ -391,3 +391,116 @@ export interface NotificationItem {
   payload?: Record<string, unknown> | null;
   created_at: string;
 }
+
+// -----------------------------------------------------------------------------
+// Gmail Models
+// -----------------------------------------------------------------------------
+
+export interface GmailStatus {
+  provider: string;
+  is_connected: boolean;
+  configured: boolean;
+  status_label: string;
+  account_email: string | null;
+  last_synced_at: string | null;
+  scopes: string[];
+}
+
+export interface GmailMessageSummary {
+  id: string;
+  thread_id: string;
+  sender: string;
+  recipient?: string | null;
+  subject: string;
+  date?: string | null;
+  snippet: string;
+  is_unread: boolean;
+  has_attachments: boolean;
+}
+
+export interface GmailMessageDetail {
+  id: string;
+  thread_id: string;
+  sender: string;
+  recipient?: string | null;
+  subject: string;
+  date?: string | null;
+  snippet: string;
+  body_plain: string;
+  sanitized: boolean;
+  has_attachments: boolean;
+  labels: string[];
+}
+
+export interface GmailEmailSummaryResult {
+  message_id: string;
+  subject: string;
+  sender: string;
+  verified_facts: string[];
+  ai_interpretation: string;
+  confidence_score: number;
+}
+
+export interface EmailTaskCandidate {
+  title: string;
+  description?: string | null;
+  proposed_deadline?: string | null;
+  is_deadline_proposed: boolean;
+  is_deadline_ambiguous: boolean;
+  ambiguity_reason?: string | null;
+  estimated_duration_minutes: number;
+  priority: TaskPriority;
+  energy_level: "low" | "medium" | "high";
+  source_message_id: string;
+  source_subject: string;
+  source_sender: string;
+}
+
+export interface GmailDraftCreate {
+  to: string;
+  subject: string;
+  body: string;
+  thread_id?: string | null;
+}
+
+export interface GmailDraftResponse {
+  draft_id: string;
+  message_id?: string | null;
+  to: string;
+  subject: string;
+  created_at: string;
+}
+
+export interface GmailSendPayload {
+  to: string;
+  subject: string;
+  body: string;
+  thread_id?: string | null;
+  source_reference?: string | null;
+}
+
+// -----------------------------------------------------------------------------
+// LifeOps Workflow Models
+// -----------------------------------------------------------------------------
+
+export interface LifeOpsWorkflowStep {
+  step: string;
+  status: "completed" | "requires_clarification" | "pending_review" | "skipped";
+  detail: string;
+}
+
+export interface LifeOpsWorkflowResponse {
+  intent_summary: string;
+  target_date: string;
+  gmail_status: GmailStatus;
+  calendar_status: CalendarStatus;
+  analyzed_emails: GmailMessageSummary[];
+  extracted_candidates: EmailTaskCandidate[];
+  has_ambiguous_deadlines: boolean;
+  clarification_questions: string[];
+  schedule_proposal?: any;
+  staged_actions: ActionRecord[];
+  notifications_created_count: number;
+  workflow_steps: LifeOpsWorkflowStep[];
+}
+

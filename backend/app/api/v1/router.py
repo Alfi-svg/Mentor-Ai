@@ -7,7 +7,9 @@ from app.api.v1.endpoints import (
     auth,
     calendar,
     chat,
+    gmail,
     health,
+    lifeops,
     notifications,
     planner,
     schedule,
@@ -32,5 +34,9 @@ api_router.include_router(chat.router)
 api_router.include_router(actions.router)
 # Include calendar integration routes
 api_router.include_router(calendar.router)
+# Include gmail integration routes
+api_router.include_router(gmail.router)
+# Include lifeops unified workflow routes
+api_router.include_router(lifeops.router)
 # Include task deadline notifications routes
 api_router.include_router(notifications.router)

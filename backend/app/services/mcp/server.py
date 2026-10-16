@@ -25,6 +25,8 @@ from app.db.models.task import Task
 from app.db.session import get_db_context
 from app.schemas.task import TaskCreateRequest, TaskResponse, TaskUpdateRequest
 from app.services.action_service import ActionService
+from app.services.gmail.models import GmailDraftCreate, GmailSendPayload
+from app.services.gmail.service import GmailService
 from app.services.scheduler.service import SchedulerService
 from app.services.task_service import TaskService
 from mcp.server.mcpserver import MCPServer
@@ -412,6 +414,152 @@ async def verify_action(
             "verified": res.verified,
             "details": res.details,
             "error_message": res.error_message,
+        }
+
+
+# -----------------------------------------------------------------------------
+# Tool 9: list_emails (Read-Only / Safe)
+# -----------------------------------------------------------------------------
+@mcp_server.tool()
+async def list_emails(
+    user_id: str,
+    query: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Fetch recent or searched emails from the user's connected Gmail account.
+
+    Args:
+        user_id: UUID of the authenticated user.
+        query: Optional search query (e.g. 'is:unread', 'subject:assignment').
+        limit: Max messages to return (default: 10, max: 25).
+    """
+    uid = validate_mcp_user_authorization(user_id)
+    safe_limit = max(1, min(limit, 25))
+
+    async with get_db_context() as db:
+        messages = await GmailService.list_messages(
+            user_id=uid,
+            db=db,
+            query=query,
+            limit=safe_limit,
+        )
+        return {
+            "emails": [m.model_dump(mode="json") for m in messages],
+            "total": len(messages),
+        }
+
+
+# -----------------------------------------------------------------------------
+# Tool 10: get_email_detail (Read-Only / Safe)
+# -----------------------------------------------------------------------------
+@mcp_server.tool()
+async def get_email_detail(
+    user_id: str,
+    message_id: str,
+) -> dict[str, Any]:
+    """Retrieve full details of an email message with sanitized plain body.
+
+    Args:
+        user_id: UUID of the authenticated user.
+        message_id: Gmail message identifier.
+    """
+    uid = validate_mcp_user_authorization(user_id)
+
+    async with get_db_context() as db:
+        detail = await GmailService.get_message(
+            user_id=uid,
+            message_id=message_id,
+            db=db,
+        )
+        return detail.model_dump(mode="json")
+
+
+# -----------------------------------------------------------------------------
+# Tool 11: create_email_draft (Internal Mutation / Safe)
+# -----------------------------------------------------------------------------
+@mcp_server.tool()
+async def create_email_draft(
+    user_id: str,
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a draft message in the user's Gmail without sending.
+
+    Args:
+        user_id: UUID of the authenticated user.
+        to: Recipient email address.
+        subject: Email subject.
+        body: Plain text email body.
+        thread_id: Optional Gmail thread ID to reply to.
+    """
+    uid = validate_mcp_user_authorization(user_id)
+    draft = GmailDraftCreate(to=to, subject=subject, body=body, thread_id=thread_id)
+
+    async with get_db_context() as db:
+        result = await GmailService.create_draft(user_id=uid, draft=draft, db=db)
+        return result.model_dump(mode="json")
+
+
+# -----------------------------------------------------------------------------
+# Tool 12: send_email (Consequential / Staged Pending Approval)
+# -----------------------------------------------------------------------------
+@mcp_server.tool()
+async def send_email(
+    user_id: str,
+    to: str,
+    subject: str,
+    body: str,
+    thread_id: str | None = None,
+    source_reference: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Stage an email send action for explicit human confirmation.
+
+    CRITICAL SAFETY REQUIREMENT: Does NOT send the email immediately.
+    The action is staged in action_history with status 'pending_approval' and
+    requires explicit user confirmation via POST /api/v1/actions/{id}/confirm
+    before being sent.
+
+    Args:
+        user_id: UUID of the authenticated user.
+        to: Recipient email address.
+        subject: Email subject.
+        body: Plain text email body.
+        thread_id: Optional Gmail thread ID.
+        source_reference: Optional source message ID or prompt reference.
+        idempotency_key: Optional UUID to prevent duplicate action submissions.
+    """
+    uid = validate_mcp_user_authorization(user_id)
+
+    payload = {
+        "to": to,
+        "subject": subject,
+        "body": body,
+        "thread_id": thread_id,
+        "source_reference": source_reference,
+    }
+
+    async with get_db_context() as db:
+        action = await ActionService.stage_action(
+            db=db,
+            user_id=uid,
+            action_type="send_email",
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+
+        return {
+            "status": "staged_pending_approval",
+            "action_id": str(action.id),
+            "action_type": action.action_type,
+            "requires_human_approval": True,
+            "idempotency_key": action.idempotency_key,
+            "message": (
+                "Action staged for human approval. The user must explicitly approve "
+                "this action via POST /api/v1/actions/{id}/confirm before the email is sent."
+            ),
         }
 
 

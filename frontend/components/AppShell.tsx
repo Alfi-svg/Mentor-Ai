@@ -11,6 +11,7 @@ import {
   Layers,
   LayoutDashboard,
   LogOut,
+  Mail,
   Menu,
   MessageSquareCode,
   ShieldAlert,
@@ -102,6 +103,12 @@ export function AppShell({ children }: AppShellProps) {
       label: "Calendar Sync",
       icon: Calendar,
       description: "Google Calendar connection",
+    },
+    {
+      href: "/settings/gmail",
+      label: "Gmail Integration",
+      icon: Mail,
+      description: "Email sync & lifeops tasks",
     },
   ];
 

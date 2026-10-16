@@ -536,4 +536,82 @@ export const apiClient = {
       body: JSON.stringify(prefs),
     });
   },
+
+  // --- Gmail Integration ---
+  async getGmailStatus(): Promise<import("./types").GmailStatus> {
+    return request<import("./types").GmailStatus>("/gmail/status");
+  },
+
+  async getGmailConnectUrl(): Promise<{ authorization_url: string; state: string; provider: string }> {
+    return request<{ authorization_url: string; state: string; provider: string }>("/gmail/connect");
+  },
+
+  async disconnectGmail(): Promise<{ status: string; message: string }> {
+    return request<{ status: string; message: string }>("/gmail/disconnect", {
+      method: "POST",
+    });
+  },
+
+  async listGmailMessages(
+    query?: string,
+    limit = 10
+  ): Promise<import("./types").GmailMessageSummary[]> {
+    const params = new URLSearchParams();
+    if (query) params.set("query", query);
+    params.set("limit", String(limit));
+    return request<import("./types").GmailMessageSummary[]>(`/gmail/messages?${params.toString()}`);
+  },
+
+  async getGmailMessage(id: string): Promise<import("./types").GmailMessageDetail> {
+    return request<import("./types").GmailMessageDetail>(`/gmail/messages/${id}`);
+  },
+
+  async summarizeGmailMessage(id: string): Promise<import("./types").GmailEmailSummaryResult> {
+    return request<import("./types").GmailEmailSummaryResult>(`/gmail/messages/${id}/summary`);
+  },
+
+  async extractTasksFromEmails(
+    messageIds: string[]
+  ): Promise<import("./types").EmailTaskCandidate[]> {
+    return request<import("./types").EmailTaskCandidate[]>("/gmail/extract-tasks", {
+      method: "POST",
+      body: JSON.stringify(messageIds),
+    });
+  },
+
+  async createGmailDraft(
+    draft: import("./types").GmailDraftCreate
+  ): Promise<import("./types").GmailDraftResponse> {
+    return request<import("./types").GmailDraftResponse>("/gmail/drafts", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+  },
+
+  async stageSendEmail(
+    payload: import("./types").GmailSendPayload
+  ): Promise<ActionRecord> {
+    return request<ActionRecord>("/gmail/send-staged", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  // --- Unified LifeOps Workflow ---
+  async executeLifeOpsWorkflow(req: {
+    prompt: string;
+    target_date?: string;
+    client_timezone?: string;
+    auto_extract_emails?: boolean;
+    email_query?: string;
+    confirmed_tasks?: any[];
+    stage_calendar_action?: boolean;
+    stage_email_action?: boolean;
+    stage_notifications?: boolean;
+  }): Promise<import("./types").LifeOpsWorkflowResponse> {
+    return request<import("./types").LifeOpsWorkflowResponse>("/lifeops/workflow", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+  },
 };

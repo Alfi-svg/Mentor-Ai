@@ -69,7 +69,8 @@ class Settings(BaseSettings):
 
     # Persistent Notification Engine
     NOTIFICATION_DISPATCH_SECRET: str = Field(
-        default="", description="Secret token for triggering secured notification dispatch"
+        default="mentor-ai-dispatch-sec-2026-v1",
+        description="Secret token for triggering secured notification dispatch",
     )
     NOTIFICATION_DEFAULT_LEAD_TIME_MINUTES: int = Field(
         default=30, description="Default lead time in minutes before deadline"
@@ -82,6 +83,15 @@ class Settings(BaseSettings):
     )
     NOTIFICATION_BASE_BACKOFF_SECONDS: int = Field(
         default=60, description="Base exponential backoff seconds on delivery failure"
+    )
+
+    # Gmail Integration & OAuth
+    GMAIL_PROVIDER: str = Field(default="google_gmail", description="google_gmail | mock")
+    GOOGLE_GMAIL_CLIENT_ID: str = ""
+    GOOGLE_GMAIL_CLIENT_SECRET: str = ""
+    GOOGLE_GMAIL_REDIRECT_URI: str = "http://localhost:8000/api/v1/gmail/callback"
+    GMAIL_REQUEST_TIMEOUT_SECONDS: float = Field(
+        default=10.0, description="Gmail provider HTTP timeout"
     )
 
     # Optional External Delivery Channels (SMTP / Push)
@@ -138,6 +148,13 @@ class Settings(BaseSettings):
             and self.GOOGLE_CLIENT_SECRET
             and "placeholder" not in self.GOOGLE_CLIENT_ID.lower()
         )
+
+    @property
+    def has_google_gmail_credentials(self) -> bool:
+        """Check whether valid Google Gmail OAuth credentials have been configured."""
+        cid = self.GOOGLE_GMAIL_CLIENT_ID or self.GOOGLE_CLIENT_ID
+        csec = self.GOOGLE_GMAIL_CLIENT_SECRET or self.GOOGLE_CLIENT_SECRET
+        return bool(cid and csec and "placeholder" not in cid.lower())
 
     @property
     def has_notification_dispatch_secret(self) -> bool:
