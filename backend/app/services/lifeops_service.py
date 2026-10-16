@@ -77,13 +77,20 @@ class LifeOpsService:
             kw in req.prompt.lower()
             for kw in ["email", "assignment", "inbox", "mail", "gmail", "message"]
         )
-        has_schedule_intent = any(
-            kw in req.prompt.lower()
-            for kw in ["schedule", "plan", "day", "calendar", "study", "tomorrow", "work"]
+        has_schedule_intent = (
+            any(
+                kw in req.prompt.lower()
+                for kw in ["schedule", "plan", "day", "calendar", "study", "tomorrow", "work", "exam", "prep"]
+            )
+            or bool(req.confirmed_tasks)
+            or req.stage_calendar_action
         )
-        has_remind_intent = any(
-            kw in req.prompt.lower()
-            for kw in ["remind", "notification", "alert", "deadline", "warn"]
+        has_remind_intent = (
+            any(
+                kw in req.prompt.lower()
+                for kw in ["remind", "notification", "alert", "deadline", "warn"]
+            )
+            or req.stage_notifications
         )
 
         steps.append(
