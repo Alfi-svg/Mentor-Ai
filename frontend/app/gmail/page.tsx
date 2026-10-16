@@ -37,6 +37,7 @@ import {
   GmailMessageSummary,
   GmailSendPayload,
   GmailStatus,
+  GmailVerifyResponse,
 } from "@/lib/types";
 
 type GmailFolder = "INBOX" | "STARRED" | "SENT" | "DRAFT";
@@ -53,10 +54,12 @@ export default function GmailWorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Settings drawer state
+  // Settings drawer & diagnostic state
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [connecting, setConnecting] = useState<boolean>(false);
   const [disconnecting, setDisconnecting] = useState<boolean>(false);
+  const [verifying, setVerifying] = useState<boolean>(false);
+  const [verifyReport, setVerifyReport] = useState<GmailVerifyResponse | null>(null);
 
   // AI Summarization & Task Extraction state
   const [summaryResult, setSummaryResult] = useState<GmailEmailSummaryResult | null>(null);
@@ -86,19 +89,36 @@ export default function GmailWorkspacePage() {
       .catch(() => setStatus(null));
   }, []);
 
-  // Parse URL search params
+  // Parse URL search params cleanly without persisting contradictory banners
   useEffect(() => {
     if (typeof window !== "undefined") {
       const sp = new URLSearchParams(window.location.search);
+      let shouldCleanUrl = false;
+
       if (sp.get("settings") === "open" || sp.get("settings") === "true") {
         setIsSettingsOpen(true);
+        shouldCleanUrl = true;
       }
       if (sp.get("connected") === "true") {
+        setError(null);
         setSuccessMessage("Gmail connected successfully with all required scopes.");
+        shouldCleanUrl = true;
       }
       const err = sp.get("error");
       if (err) {
-        setError(decodeURIComponent(err));
+        setSuccessMessage(null);
+        const missing = sp.get("missing");
+        const desc = sp.get("error_description");
+        let detail = decodeURIComponent(desc || err);
+        if (missing) {
+          detail = `Permissions missing (${missing}). Please reconnect and grant requested Gmail permissions.`;
+        }
+        setError(detail);
+        shouldCleanUrl = true;
+      }
+
+      if (shouldCleanUrl) {
+        window.history.replaceState({}, "", window.location.pathname);
       }
     }
   }, []);
@@ -114,6 +134,38 @@ export default function GmailWorkspacePage() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to initiate Gmail connection.");
       setConnecting(false);
+    }
+  };
+
+  const handleVerifyConnection = async () => {
+    setVerifying(true);
+    try {
+      const res = await apiClient.verifyGmail();
+      setVerifyReport(res);
+      setStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              is_connected: res.connected,
+              has_sufficient_scopes: res.has_sufficient_scopes,
+              status_label: res.has_sufficient_scopes ? "connected" : "insufficient_scopes",
+              account_email: res.account_email,
+              scopes: res.granted_scopes,
+              missing_scopes: res.missing_scopes,
+            }
+          : null
+      );
+      if (res.can_read_messages) {
+        setError(null);
+        setSuccessMessage("Live Gmail connection verified operational. Messages can be retrieved.");
+      } else if (res.api_error) {
+        setSuccessMessage(null);
+        setError(`Verification warning: ${res.api_error}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to run Gmail diagnostics.");
+    } finally {
+      setVerifying(false);
     }
   };
 
@@ -137,6 +189,7 @@ export default function GmailWorkspacePage() {
       setMessages([]);
       setSelectedMessageId(null);
       setSelectedDetail(null);
+      setVerifyReport(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to disconnect Gmail.");
     } finally {
@@ -147,7 +200,6 @@ export default function GmailWorkspacePage() {
   // Fetch messages when folder or search query changes
   const loadMessages = useCallback(async () => {
     setLoadingList(true);
-    setError(null);
     try {
       const data = await apiClient.listGmailMessages({
         folder: activeFolder,
@@ -155,17 +207,22 @@ export default function GmailWorkspacePage() {
         limit: 25,
       });
       setMessages(data);
+      // Clear error on successful fetch
+      setError(null);
       // Auto-select first message on desktop if none selected
       if (data.length > 0 && !selectedMessageId) {
         setSelectedMessageId(data[0].id);
       }
     } catch (err: any) {
       const msg = err instanceof Error ? err.message : "Failed to load messages.";
-      if (
+      const isScopeError =
+        (err instanceof ApiClientError && err.errorCode === "GMAIL_SCOPE_INSUFFICIENT") ||
         msg.includes("403") ||
+        msg.toLowerCase().includes("permission") ||
         msg.toLowerCase().includes("scope") ||
-        msg.includes("GMAIL_SCOPE_INSUFFICIENT")
-      ) {
+        msg.includes("GMAIL_SCOPE_INSUFFICIENT");
+
+      if (isScopeError) {
         setStatus((prev) =>
           prev
             ? {
@@ -176,6 +233,7 @@ export default function GmailWorkspacePage() {
             : null
         );
       }
+      setSuccessMessage(null);
       setError(msg);
     } finally {
       setLoadingList(false);
@@ -488,17 +546,37 @@ export default function GmailWorkspacePage() {
           </div>
         )}
 
-        {/* Global Notifications */}
+        {/* Global Notifications (Mutually Exclusive & Dismissible) */}
         {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
-            <span>{error}</span>
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-300">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
+              <span>{error}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setError(null)}
+              className="text-rose-400 hover:text-rose-200 p-0.5 rounded transition-colors"
+              title="Dismiss error"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
-        {successMessage && (
-          <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs text-emerald-300">
-            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
-            <span>{successMessage}</span>
+        {!error && successMessage && (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2.5 text-xs text-emerald-300">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+              <span>{successMessage}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSuccessMessage(null)}
+              className="text-emerald-400 hover:text-emerald-200 p-0.5 rounded transition-colors"
+              title="Dismiss message"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 
@@ -560,7 +638,13 @@ export default function GmailWorkspacePage() {
             {/* Folder / Count Bar */}
             <div className="flex items-center justify-between px-3 py-2 bg-zinc-900/80 border-b border-zinc-800 text-[11px] text-zinc-400">
               <span className="font-bold text-zinc-300 capitalize">{activeFolder.toLowerCase()}</span>
-              <span>{messages.length} messages</span>
+              <span>
+                {error
+                  ? "Sync error"
+                  : loadingList
+                  ? "Loading..."
+                  : `${messages.length} message${messages.length === 1 ? "" : "s"}`}
+              </span>
             </div>
 
             {/* Messages List */}
@@ -578,7 +662,7 @@ export default function GmailWorkspacePage() {
                   <div className="space-y-1">
                     <h3 className="text-xs font-semibold text-white">Forbidden: Missing Required Gmail Scope</h3>
                     <p className="text-[11px] text-zinc-400 leading-relaxed">
-                      Google blocked message retrieval because read/modify permissions were not granted during authorization. Reconnect your account to approve the required scopes.
+                      Google blocked message retrieval because read permissions were not granted during authorization. Reconnect your account to approve the required scopes.
                     </p>
                   </div>
                   <button
@@ -609,6 +693,35 @@ export default function GmailWorkspacePage() {
                     <Mail className="h-3 w-3" />
                     <span>Connect Gmail</span>
                   </button>
+                </div>
+              ) : error ? (
+                <div className="p-6 text-center space-y-3">
+                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                    <AlertTriangle className="h-5 w-5" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xs font-semibold text-rose-300">Failed to Retrieve Messages</h3>
+                    <p className="text-[11px] text-zinc-400 leading-relaxed break-words px-2">
+                      {error}
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      onClick={loadMessages}
+                      disabled={loadingList}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors"
+                    >
+                      <RefreshCw className={`h-3 w-3 ${loadingList ? "animate-spin" : ""}`} />
+                      <span>Retry</span>
+                    </button>
+                    <button
+                      onClick={() => setIsSettingsOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white shadow-sm transition-colors"
+                    >
+                      <Settings className="h-3 w-3" />
+                      <span>Diagnostics</span>
+                    </button>
+                  </div>
                 </div>
               ) : messages.length === 0 ? (
                 <div className="text-center p-8 text-xs text-zinc-500">
@@ -1063,7 +1176,7 @@ export default function GmailWorkspacePage() {
 
                   {status?.is_connected && (!status?.has_sufficient_scopes || status?.status_label === "insufficient_scopes") && (
                     <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-amber-200 text-[11px] leading-relaxed">
-                      Missing required scopes: <code className="font-mono text-amber-300">gmail.readonly</code> & <code className="font-mono text-amber-300">gmail.modify</code>. Click Reconnect below and make sure all permissions are granted on Google&apos;s consent screen.
+                      Missing required read permission: <code className="font-mono text-amber-300">gmail.readonly</code>. Click Reconnect below and make sure all requested permissions are selected on Google&apos;s consent screen.
                     </div>
                   )}
 
@@ -1088,6 +1201,92 @@ export default function GmailWorkspacePage() {
                     )}
                   </div>
                 </div>
+
+                {/* Live Diagnostics & Verification Card */}
+                {status?.is_connected && (
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-zinc-200 font-semibold">
+                        <Sparkles className="h-4 w-4 text-brand-400" />
+                        <span>Live Connection Diagnostics</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleVerifyConnection}
+                        disabled={verifying}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-[11px] font-semibold text-zinc-200 hover:bg-zinc-700 hover:text-white transition-colors disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${verifying ? "animate-spin text-brand-400" : ""}`} />
+                        <span>{verifying ? "Testing..." : "Test Connection"}</span>
+                      </button>
+                    </div>
+
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      Queries Google OAuth tokeninfo and executes a live test retrieval against <code className="font-mono text-zinc-300">users.messages.list</code> to verify token health and real API access.
+                    </p>
+
+                    {verifyReport && (
+                      <div className="rounded-lg border border-zinc-750 bg-zinc-900/60 p-3 space-y-2 text-[11px]">
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-400">Google Verified Email:</span>
+                          <span className="font-mono text-white font-medium">{verifyReport.account_email || "N/A"}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-400">Inbox Read Access:</span>
+                          {verifyReport.can_read_messages ? (
+                            <span className="inline-flex items-center gap-1 font-semibold text-emerald-400">
+                              <CheckCircle2 className="h-3 w-3" /> Operational
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 font-semibold text-rose-400">
+                              <AlertTriangle className="h-3 w-3" /> Blocked
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-zinc-400">API Status:</span>
+                          <span className="font-mono text-zinc-300">{verifyReport.api_status}</span>
+                        </div>
+
+                        {verifyReport.api_error && (
+                          <div className="rounded border border-rose-500/30 bg-rose-500/10 p-2 text-rose-300 font-mono text-[10px] break-words">
+                            {verifyReport.api_error}
+                          </div>
+                        )}
+
+                        <div className="pt-2 border-t border-zinc-800/80">
+                          <span className="text-zinc-400 block mb-1.5 font-medium">Granted Scopes ({verifyReport.granted_scopes.length}):</span>
+                          <div className="flex flex-wrap gap-1">
+                            {verifyReport.granted_scopes.map((scope) => (
+                              <span
+                                key={scope}
+                                className="rounded bg-zinc-800 border border-zinc-750 px-1.5 py-0.5 text-[10px] font-mono text-zinc-300"
+                              >
+                                {scope.replace("https://www.googleapis.com/auth/", "")}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+
+                        {verifyReport.missing_scopes.length > 0 && (
+                          <div className="pt-1">
+                            <span className="text-amber-400 block mb-1 font-medium">Missing Scopes:</span>
+                            <div className="flex flex-wrap gap-1">
+                              {verifyReport.missing_scopes.map((scope) => (
+                                <span
+                                  key={scope}
+                                  className="rounded bg-amber-500/10 border border-amber-500/30 px-1.5 py-0.5 text-[10px] font-mono text-amber-300"
+                                >
+                                  {scope}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Scopes Transparency Card */}
                 <div className="rounded-xl border border-zinc-800 bg-zinc-850 p-4 space-y-3">

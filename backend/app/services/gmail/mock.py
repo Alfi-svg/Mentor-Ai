@@ -2,6 +2,7 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.services.calendar.models import OAuthTokenData
 from app.services.gmail.base import GmailAuthRevokedException, GmailProvider
@@ -20,10 +21,11 @@ class MockGmailAdapter(GmailProvider):
     """In-memory mock implementation of GmailProvider for tests and offline usage."""
 
     def __init__(self) -> None:
-        self.sent_emails: list[dict[str, Any]] = []  # type: ignore[name-defined]
-        self.drafts: list[dict[str, Any]] = []  # type: ignore[name-defined]
+        self.sent_emails: list[dict[str, Any]] = []
+        self.drafts: list[dict[str, Any]] = []
         self.is_revoked: bool = False
         self.simulate_timeout: bool = False
+        self.token_details_override: dict[str, Any] | None = None
 
         now = datetime.now(UTC)
         self._mock_messages: dict[str, dict[str, Any]] = {  # type: ignore[name-defined]
@@ -131,6 +133,37 @@ class MockGmailAdapter(GmailProvider):
     async def revoke_token(self, token: str) -> bool:
         self.is_revoked = True
         return True
+
+    async def verify_token_details(self, access_token: str) -> dict[str, Any]:
+        """Verify access token against mock provider."""
+        if self.token_details_override is not None:
+            return self.token_details_override
+        if self.is_revoked or access_token == "revoked_token":
+            return {
+                "valid": False,
+                "error": "invalid_token",
+                "error_description": "Token has been revoked.",
+            }
+        if access_token == "insufficient_scope_token":
+            return {
+                "valid": True,
+                "email": "student@university.edu",
+                "scopes": ["https://www.googleapis.com/auth/userinfo.email", "openid"],
+                "expires_in": 3600,
+                "audience": "mock-client-id",
+            }
+        return {
+            "valid": True,
+            "email": "student@university.edu",
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/gmail.compose",
+                "https://www.googleapis.com/auth/gmail.send",
+            ],
+            "expires_in": 3600,
+            "audience": "mock-client-id",
+        }
 
     async def list_messages(
         self,

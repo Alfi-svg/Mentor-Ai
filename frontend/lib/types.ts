@@ -531,7 +531,22 @@ export interface GmailSendPayload {
   source_reference?: string | null;
 }
 
+export interface GmailVerifyResponse {
+  connected: boolean;
+  status: string;
+  verified: boolean;
+  account_email: string | null;
+  has_sufficient_scopes: boolean;
+  missing_scopes: string[];
+  granted_scopes: string[];
+  can_read_messages: boolean;
+  api_status: string;
+  api_error: string | null;
+  message: string | null;
+}
+
 // -----------------------------------------------------------------------------
+
 // LifeOps Workflow Models
 // -----------------------------------------------------------------------------
 

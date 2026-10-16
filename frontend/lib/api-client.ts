@@ -581,9 +581,12 @@ export const apiClient = {
     });
   },
 
-  // --- Gmail Integration ---
   async getGmailStatus(): Promise<import("./types").GmailStatus> {
     return request<import("./types").GmailStatus>("/gmail/status");
+  },
+
+  async verifyGmail(): Promise<import("./types").GmailVerifyResponse> {
+    return request<import("./types").GmailVerifyResponse>("/gmail/verify");
   },
 
   async getGmailConnectUrl(): Promise<{ authorization_url: string; state: string; provider: string }> {

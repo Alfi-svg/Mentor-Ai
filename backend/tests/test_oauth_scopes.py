@@ -67,10 +67,15 @@ def test_gmail_scopes_detection():
     assert valid is False
     assert "https://www.googleapis.com/auth/gmail.readonly" in missing
 
-    # Missing modify scope
-    valid, missing = check_gmail_scopes(["https://www.googleapis.com/auth/gmail.readonly"])
+    # Missing read scope (e.g. only email profile)
+    valid, missing = check_gmail_scopes(["https://www.googleapis.com/auth/userinfo.email"])
     assert valid is False
-    assert "https://www.googleapis.com/auth/gmail.modify" in missing
+    assert "https://www.googleapis.com/auth/gmail.readonly" in missing
+
+    # Sufficient with readonly scope
+    valid, missing = check_gmail_scopes(["https://www.googleapis.com/auth/gmail.readonly"])
+    assert valid is True
+    assert len(missing) == 0
 
     # Sufficient with readonly and modify
     valid, missing = check_gmail_scopes([

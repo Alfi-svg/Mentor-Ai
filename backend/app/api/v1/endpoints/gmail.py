@@ -26,8 +26,9 @@ from app.services.gmail.models import (
     GmailModifyRequest,
     GmailSendPayload,
     GmailStatusResponse,
+    GmailVerifyResponse,
 )
-from app.services.gmail.service import GmailService
+from app.services.gmail.service import GmailService, check_gmail_scopes
 
 router = APIRouter(prefix="/gmail", tags=["gmail"])
 
@@ -101,6 +102,7 @@ async def oauth_callback(
 
     try:
         conn, email = await GmailService.handle_callback(code=code, state=state, db=db)
+        has_sufficient, missing = check_gmail_scopes(conn.scopes)
     except AppException as exc:
         if is_browser_nav:
             dest = f"{settings.FRONTEND_URL}/gmail?error={quote_plus(exc.error_code)}&error_description={quote_plus(exc.detail)}"
@@ -118,15 +120,36 @@ async def oauth_callback(
 
     if is_browser_nav:
         email_param = f"&email={quote_plus(email)}" if email else ""
+        if not has_sufficient:
+            missing_str = quote_plus(",".join(missing))
+            dest = f"{settings.FRONTEND_URL}/gmail?error=insufficient_scopes&missing={missing_str}{email_param}"
+            return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+
         dest = f"{settings.FRONTEND_URL}/gmail?connected=true{email_param}"
         return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
 
     return {
-        "status": "connected",
+        "status": "connected" if has_sufficient else "insufficient_scopes",
         "provider": conn.provider,
         "account_email": email,
         "connected_at": conn.created_at.isoformat(),
+        "has_sufficient_scopes": has_sufficient,
+        "missing_scopes": missing,
     }
+
+
+@router.get(
+    "/verify",
+    response_model=GmailVerifyResponse,
+    summary="Verify Gmail Connection",
+    description="Inspects stored credentials, queries Google tokeninfo, tests mailbox list access, and returns verified diagnostic report.",
+)
+async def verify_gmail(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> GmailVerifyResponse:
+    """Perform live diagnostic verification of Gmail access."""
+    return await GmailService.verify_connection(user_id=current_user.id, db=db)
 
 
 @router.post(

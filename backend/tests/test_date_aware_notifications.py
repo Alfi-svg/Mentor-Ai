@@ -323,9 +323,12 @@ async def test_midnight_date_transitions(test_db):
     test_db.add(task)
     await test_db.commit()
 
-    await NotificationService.reconcile_task_lifecycle(
-        db=test_db, user_id=user_id, task=task, event="task_schedule_changed"
-    )
+    with patch("app.services.notification_service.datetime") as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 10, 16, 12, 0, 0, tzinfo=UTC)
+        mock_dt.combine = datetime.combine
+        await NotificationService.reconcile_task_lifecycle(
+            db=test_db, user_id=user_id, task=task, event="task_schedule_changed"
+        )
 
     stmt = select(Notification).where(Notification.task_id == task.id)
     notif = (await test_db.execute(stmt)).scalar_one()

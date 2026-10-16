@@ -1,7 +1,7 @@
 """Abstract provider protocol and exceptions for Gmail integration."""
 
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from app.core.errors import AppException
 from app.services.calendar.models import OAuthTokenData
@@ -57,6 +57,13 @@ class GmailScopeMissingException(GmailProviderException):
         super().__init__(detail=detail, status_code=403, error_code="GMAIL_SCOPE_MISSING")
 
 
+class GmailApiDisabledException(GmailProviderException):
+    """Raised when Gmail API is not enabled in Google Cloud Console."""
+
+    def __init__(self, detail: str = "Gmail API is not enabled in your Google Cloud project."):
+        super().__init__(detail=detail, status_code=403, error_code="GMAIL_API_DISABLED")
+
+
 @runtime_checkable
 class GmailProvider(Protocol):
     """Protocol for Gmail provider adapters (Google production vs mock test adapter)."""
@@ -80,6 +87,10 @@ class GmailProvider(Protocol):
 
     async def revoke_token(self, token: str) -> bool:
         """Revoke authorization token with Google."""
+        ...
+
+    async def verify_token_details(self, access_token: str) -> dict[str, Any]:
+        """Verify access token against provider, returning validity, scopes, and account email."""
         ...
 
     async def list_messages(

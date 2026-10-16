@@ -15,11 +15,13 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.calendar.models import OAuthTokenData
 from app.services.gmail.base import (
+    GmailApiDisabledException,
     GmailAuthExpiredException,
     GmailAuthRevokedException,
     GmailProvider,
     GmailProviderException,
     GmailRateLimitException,
+    GmailScopeMissingException,
     GmailTimeoutException,
 )
 from app.services.gmail.models import (
@@ -38,6 +40,7 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+GOOGLE_TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
 # Least-privilege Gmail scopes
@@ -64,6 +67,37 @@ def _safe_b64decode(data: str) -> str:
         return decoded_bytes.decode("utf-8", errors="replace")
     except Exception:
         return ""
+
+
+def _parse_google_error(resp: httpx.Response, default_msg: str = "Google API request failed") -> tuple[str, str]:
+    """Extract human-readable error message and specific machine reason from Google API error response."""
+    error_msg = default_msg
+    error_reason = "unknown"
+    try:
+        body = resp.json()
+        error_obj = body.get("error", {})
+        if isinstance(error_obj, dict):
+            error_msg = error_obj.get("message") or error_msg
+            status_val = error_obj.get("status")
+            details = error_obj.get("details", [])
+            if isinstance(details, list):
+                for d in details:
+                    if isinstance(d, dict) and "reason" in d:
+                        error_reason = d["reason"]
+                        break
+            errors = error_obj.get("errors", [])
+            if error_reason == "unknown" and isinstance(errors, list):
+                for e in errors:
+                    if isinstance(e, dict) and "reason" in e:
+                        error_reason = e["reason"]
+                        break
+            if error_reason == "unknown" and status_val:
+                error_reason = str(status_val)
+    except Exception:
+        error_msg = resp.text or default_msg
+
+    return error_msg, error_reason
+
 
 
 class GoogleGmailAdapter(GmailProvider):
@@ -214,6 +248,54 @@ class GoogleGmailAdapter(GmailProvider):
             if should_close:
                 await client.aclose()
 
+    async def verify_token_details(self, access_token: str) -> dict[str, Any]:
+        """Query Google's tokeninfo endpoint to verify token validity, granted scopes, and account email."""
+        client = await self._get_client()
+        should_close = client != self._client
+
+        try:
+            resp = await client.get(
+                GOOGLE_TOKENINFO_URL,
+                params={"access_token": access_token},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_scope = data.get("scope", "")
+                granted_scopes = raw_scope.split() if isinstance(raw_scope, str) else []
+                return {
+                    "valid": True,
+                    "email": data.get("email"),
+                    "scopes": granted_scopes,
+                    "expires_in": int(data.get("expires_in", 0)),
+                    "audience": data.get("aud") or data.get("azp"),
+                }
+            elif resp.status_code in (400, 401):
+                err_data = {}
+                try:
+                    err_data = resp.json()
+                except Exception:
+                    pass
+                return {
+                    "valid": False,
+                    "error": err_data.get("error", "invalid_token"),
+                    "error_description": err_data.get("error_description", resp.text),
+                }
+            return {
+                "valid": False,
+                "error": f"http_{resp.status_code}",
+                "error_description": resp.text,
+            }
+        except Exception as exc:
+            logger.warning("Google tokeninfo verification failed with network/parsing exception", error=str(exc))
+            return {
+                "valid": False,
+                "error": "verification_exception",
+                "error_description": str(exc),
+            }
+        finally:
+            if should_close:
+                await client.aclose()
+
     async def list_messages(
         self,
         access_token: str,
@@ -248,7 +330,21 @@ class GoogleGmailAdapter(GmailProvider):
             if resp.status_code == 401:
                 raise GmailAuthExpiredException()
             if resp.status_code == 403:
-                raise GmailProviderException("Forbidden: Missing required Gmail scope.", status_code=403)
+                err_msg, err_reason = _parse_google_error(resp, "Forbidden: Gmail API access denied.")
+                logger.error(
+                    "Google Gmail API 403 Forbidden on list_messages",
+                    error_message=err_msg,
+                    error_reason=err_reason,
+                )
+                if err_reason == "SERVICE_DISABLED" or "disabled" in err_msg.lower() or "has not been used in project" in err_msg.lower():
+                    raise GmailApiDisabledException(
+                        f"Gmail API is disabled in your Google Cloud project. Please enable it at https://console.developers.google.com/apis/api/gmail.googleapis.com/overview: {err_msg}"
+                    )
+                if err_reason in ("ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions") or "scope" in err_msg.lower():
+                    raise GmailScopeMissingException(
+                        f"Google account permissions missing. Please reconnect and grant read access to your Gmail messages: {err_msg}"
+                    )
+                raise GmailProviderException(f"Gmail API forbidden (403): {err_msg}", status_code=403)
             if resp.status_code == 429:
                 raise GmailRateLimitException()
             resp.raise_for_status()
@@ -256,6 +352,7 @@ class GoogleGmailAdapter(GmailProvider):
             data = resp.json()
             messages_meta = data.get("messages", [])
             if not messages_meta:
+                # Legitimate empty mailbox / folder
                 return []
 
             async def fetch_summary(mid: str) -> GmailMessageSummary | None:
@@ -268,35 +365,63 @@ class GoogleGmailAdapter(GmailProvider):
                             "metadataHeaders": ["Subject", "From", "To", "Date"],
                         },
                     )
-                    if m_resp.status_code == 200:
-                        m_data = m_resp.json()
-                        headers = {h["name"].lower(): h["value"] for h in m_data.get("payload", {}).get("headers", [])}
-                        lbls = m_data.get("labelIds", [])
-                        return GmailMessageSummary(
-                            id=m_data["id"],
-                            thread_id=m_data.get("threadId", m_data["id"]),
-                            sender=sanitize_email_text(headers.get("from", "Unknown")),
-                            recipient=sanitize_email_text(headers.get("to")),
-                            subject=sanitize_email_text(headers.get("subject", "(No Subject)")),
-                            date=headers.get("date"),
-                            snippet=sanitize_email_text(m_data.get("snippet", "")),
-                            is_unread="UNREAD" in lbls,
-                            is_starred="STARRED" in lbls,
-                            has_attachments=any(
-                                part.get("filename")
-                                for part in m_data.get("payload", {}).get("parts", [])
-                            ),
-                            labels=lbls,
-                        )
+                    if m_resp.status_code == 401:
+                        raise GmailAuthExpiredException()
+                    if m_resp.status_code == 403:
+                        sub_msg, sub_reason = _parse_google_error(m_resp, "Forbidden to get message metadata.")
+                        if sub_reason == "SERVICE_DISABLED" or "disabled" in sub_msg.lower():
+                            raise GmailApiDisabledException(sub_msg)
+                        raise GmailScopeMissingException(sub_msg)
+                    if m_resp.status_code == 429:
+                        raise GmailRateLimitException()
+                    m_resp.raise_for_status()
+
+                    m_data = m_resp.json()
+                    headers = {h["name"].lower(): h["value"] for h in m_data.get("payload", {}).get("headers", [])}
+                    lbls = m_data.get("labelIds", [])
+                    return GmailMessageSummary(
+                        id=m_data["id"],
+                        thread_id=m_data.get("threadId", m_data["id"]),
+                        sender=sanitize_email_text(headers.get("from", "Unknown")),
+                        recipient=sanitize_email_text(headers.get("to")),
+                        subject=sanitize_email_text(headers.get("subject", "(No Subject)")),
+                        date=headers.get("date"),
+                        snippet=sanitize_email_text(m_data.get("snippet", "")),
+                        is_unread="UNREAD" in lbls,
+                        is_starred="STARRED" in lbls,
+                        has_attachments=any(
+                            part.get("filename")
+                            for part in m_data.get("payload", {}).get("parts", [])
+                        ),
+                        labels=lbls,
+                    )
+                except (GmailAuthExpiredException, GmailAuthRevokedException, GmailApiDisabledException, GmailScopeMissingException, GmailRateLimitException):
+                    raise
                 except Exception as exc:
                     logger.warning("Failed fetching metadata for Gmail message", message_id=mid, error=str(exc))
-                return None
+                    return None
 
             tasks = [fetch_summary(item["id"]) for item in messages_meta if "id" in item]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Re-raise any fatal auth/scope exceptions
+            for r in results:
+                if isinstance(r, (GmailAuthExpiredException, GmailAuthRevokedException, GmailApiDisabledException, GmailScopeMissingException, GmailRateLimitException)):
+                    raise r
+
             summaries: list[GmailMessageSummary] = [
                 r for r in results if isinstance(r, GmailMessageSummary)
             ]
+
+            # Distinguish: if messages existed but all failed to load, do NOT return an empty list
+            if messages_meta and not summaries and results:
+                first_exc = next((r for r in results if isinstance(r, Exception)), None)
+                err_detail = str(first_exc) if first_exc else "Failed to parse message summaries"
+                raise GmailProviderException(
+                    f"Found {len(messages_meta)} messages in Gmail, but failed to retrieve details: {err_detail}",
+                    status_code=502,
+                )
+
             return summaries
         except httpx.TimeoutException as exc:
             raise GmailTimeoutException() from exc
@@ -381,6 +506,11 @@ class GoogleGmailAdapter(GmailProvider):
             )
             if resp.status_code == 401:
                 raise GmailAuthExpiredException()
+            if resp.status_code == 403:
+                err_msg, err_reason = _parse_google_error(resp, "Forbidden to get message details.")
+                if err_reason == "SERVICE_DISABLED" or "disabled" in err_msg.lower():
+                    raise GmailApiDisabledException(err_msg)
+                raise GmailScopeMissingException(err_msg)
             if resp.status_code == 404:
                 raise GmailProviderException("Message not found in Gmail.", status_code=404)
             resp.raise_for_status()
@@ -443,6 +573,13 @@ class GoogleGmailAdapter(GmailProvider):
             )
             if resp.status_code == 401:
                 raise GmailAuthExpiredException()
+            if resp.status_code == 403:
+                err_msg, err_reason = _parse_google_error(resp, "Forbidden to modify message.")
+                if err_reason == "SERVICE_DISABLED" or "disabled" in err_msg.lower():
+                    raise GmailApiDisabledException(err_msg)
+                raise GmailScopeMissingException(
+                    f"Modifying message labels requires modify permission: {err_msg}"
+                )
             if resp.status_code == 404:
                 raise GmailProviderException("Message not found in Gmail.", status_code=404)
             resp.raise_for_status()

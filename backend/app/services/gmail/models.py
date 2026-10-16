@@ -155,3 +155,20 @@ class GmailSendResult(BaseModel):
     subject: str
     sent_at: datetime
     verified: bool = True
+
+
+class GmailVerifyResponse(BaseModel):
+    """Deep verification of live Gmail OAuth credentials and API access."""
+
+    connected: bool
+    status: str  # operational, degraded, token_invalid, token_rejected, disconnected
+    verified: bool
+    account_email: str | None = None
+    has_sufficient_scopes: bool = True
+    missing_scopes: list[str] = Field(default_factory=list)
+    granted_scopes: list[str] = Field(default_factory=list)
+    can_read_messages: bool = False
+    api_status: str  # operational, api_disabled, scope_missing, rate_limited, api_error, unknown
+    api_error: str | None = None
+    message: str | None = None
+

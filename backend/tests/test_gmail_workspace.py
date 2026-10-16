@@ -201,3 +201,83 @@ async def test_create_and_list_drafts(test_db):
     assert draft_res.draft_id.startswith("draft-")
     assert draft_res.to == "advisor@university.edu"
     assert len(mock_gmail.drafts) == 1
+
+
+@pytest.mark.asyncio
+async def test_verify_connection_operational(test_db):
+    """Verify deep diagnostic inspection returns operational when token and list_messages work."""
+    mock_gmail = MockGmailAdapter()
+    mock_gmail.token_details_override = {
+        "valid": True,
+        "email": "student.verify@university.edu",
+        "scopes": [
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ],
+    }
+    GmailService.set_provider_override(mock_gmail)
+    user_id = await setup_user_with_gmail(test_db, email="student.verify@university.edu")
+
+    report = await GmailService.verify_connection(user_id=user_id, db=test_db)
+    assert report.connected is True
+    assert report.verified is True
+    assert report.can_read_messages is True
+    assert report.has_sufficient_scopes is True
+    assert report.api_status == "operational"
+    assert report.account_email == "student.verify@university.edu"
+    assert "https://www.googleapis.com/auth/gmail.readonly" in report.granted_scopes
+
+
+@pytest.mark.asyncio
+async def test_verify_connection_missing_read_scope(test_db):
+    """Verify diagnostic accurately identifies missing read scope when only calendar is granted."""
+    mock_gmail = MockGmailAdapter()
+    mock_gmail.token_details_override = {
+        "valid": True,
+        "email": "cal.only@university.edu",
+        "scopes": ["https://www.googleapis.com/auth/calendar.events"],
+    }
+    GmailService.set_provider_override(mock_gmail)
+    user_id = uuid.uuid4()
+    profile = Profile(id=user_id, email="cal.only@university.edu", full_name="Cal Only")
+    conn = ExternalConnection(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        provider="google_gmail",
+        provider_account_id="cal.only@university.edu",
+        status="connected",
+        encrypted_access_token=encrypt_token("mock_access_token"),
+        encrypted_refresh_token=encrypt_token("mock_refresh_token"),
+        token_expires_at=datetime.now(UTC) + timedelta(hours=2),
+        scopes=["https://www.googleapis.com/auth/calendar.events"],
+        created_at=datetime.now(UTC),
+    )
+    test_db.add_all([profile, conn])
+    await test_db.commit()
+
+    report = await GmailService.verify_connection(user_id=user_id, db=test_db)
+    assert report.connected is True
+    assert report.has_sufficient_scopes is False
+    assert "https://www.googleapis.com/auth/gmail.readonly" in report.missing_scopes
+    assert report.api_status == "scope_missing"
+
+
+@pytest.mark.asyncio
+async def test_empty_mailbox_vs_error_distinction(test_db):
+    """Ensure genuinely empty mailboxes return [] while API errors raise exceptions and are never masked."""
+    mock_gmail = MockGmailAdapter()
+    # Empty mock messages
+    mock_gmail._mock_messages.clear()
+    GmailService.set_provider_override(mock_gmail)
+    user_id = await setup_user_with_gmail(test_db, email="empty.inbox@university.edu")
+
+    # Legitimate empty inbox returns empty list
+    messages = await GmailService.list_messages(user_id=user_id, db=test_db, folder="INBOX")
+    assert messages == []
+
+    # If provider fails with error, exception must be raised, NOT silently returning []
+    mock_gmail.is_revoked = True
+    with pytest.raises(Exception) as exc_info:
+        await GmailService.list_messages(user_id=user_id, db=test_db, folder="INBOX")
+    assert exc_info.value is not None
+
