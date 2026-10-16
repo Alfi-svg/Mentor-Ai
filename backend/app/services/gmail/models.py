@@ -39,11 +39,13 @@ class GmailMessageSummary(BaseModel):
     date: datetime | str | None = None
     snippet: str
     is_unread: bool = False
+    is_starred: bool = False
     has_attachments: bool = False
+    labels: list[str] = Field(default_factory=list)
 
 
 class GmailMessageDetail(BaseModel):
-    """Full detail of an email message with sanitized plain body."""
+    """Full detail of an email message with sanitized plain and HTML body."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -55,9 +57,27 @@ class GmailMessageDetail(BaseModel):
     date: datetime | str | None = None
     snippet: str
     body_plain: str
+    body_html: str | None = None
     sanitized: bool = True
     has_attachments: bool = False
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    is_starred: bool = False
+
+
+class GmailMessagesPageResponse(BaseModel):
+    """Paginated collection of Gmail message summaries."""
+
+    messages: list[GmailMessageSummary]
+    next_page_token: str | None = None
+    result_size_estimate: int = 0
+
+
+class GmailModifyRequest(BaseModel):
+    """Request payload to add or remove labels on a message (e.g. read/unread, star)."""
+
+    add_label_ids: list[str] = Field(default_factory=list)
+    remove_label_ids: list[str] = Field(default_factory=list)
 
 
 class GmailEmailSummaryResult(BaseModel):

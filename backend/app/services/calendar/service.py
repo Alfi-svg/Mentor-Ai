@@ -31,6 +31,7 @@ from app.services.calendar.mock import MockCalendarAdapter
 from app.services.calendar.models import (
     CalendarConnectResponse,
     CalendarEventCreate,
+    CalendarEventUpdate,
     CalendarStatusResponse,
     CalendarSyncResponse,
     ConflictCheckResponse,
@@ -453,6 +454,164 @@ class CalendarService:
         await db.refresh(event)
 
         return event, pushed_to_remote
+
+    @classmethod
+    async def update_calendar_event(
+        cls,
+        user_id: uuid.UUID,
+        event_id: uuid.UUID,
+        event_data: CalendarEventUpdate,
+        db: AsyncSession,
+    ) -> CalendarEvent:
+        """Update a calendar event locally and on Google Calendar if connected."""
+        stmt = select(CalendarEvent).where(
+            CalendarEvent.id == event_id,
+            CalendarEvent.user_id == user_id,
+        )
+        res = await db.execute(stmt)
+        event = res.scalar_one_or_none()
+        if not event:
+            raise AppException(
+                detail=f"Calendar event {event_id} not found",
+                status_code=404,
+                error_code="EVENT_NOT_FOUND",
+            )
+
+        # Check if connected to Google Calendar and push update
+        if event.external_id:
+            conn_stmt = select(ExternalConnection).where(
+                ExternalConnection.user_id == user_id,
+                ExternalConnection.provider == "google_calendar",
+                ExternalConnection.status == "connected",
+            )
+            conn_res = await db.execute(conn_stmt)
+            conn = conn_res.scalar_one_or_none()
+            if conn:
+                try:
+                    access_token = await cls.get_valid_access_token(conn, db)
+                    provider = cls.get_provider()
+                    await provider.update_event(access_token, event.external_id, event_data)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to update event on remote calendar provider",
+                        event_id=str(event.id),
+                        external_id=event.external_id,
+                        error=str(exc),
+                    )
+
+        if event_data.title is not None:
+            event.title = event_data.title
+        if event_data.description is not None:
+            event.description = event_data.description
+        if event_data.location is not None:
+            event.location = event_data.location
+        if event_data.start_time is not None:
+            event.start_time = event_data.start_time.astimezone(UTC)
+        if event_data.end_time is not None:
+            event.end_time = event_data.end_time.astimezone(UTC)
+
+        # If this event corresponds to a task, reconcile task scheduled times
+        if event.external_id:
+            from app.db.models.task import Task
+            task_stmt = select(Task).where(
+                Task.user_id == user_id,
+                Task.google_calendar_event_id == event.external_id,
+            )
+            task_res = await db.execute(task_stmt)
+            task = task_res.scalar_one_or_none()
+            if task:
+                task.scheduled_start = event.start_time
+                task.scheduled_end = event.end_time
+                diff_mins = int((event.end_time - event.start_time).total_seconds() / 60)
+                if diff_mins > 0:
+                    task.duration_minutes = diff_mins
+                task.last_synced_at = datetime.now(UTC)
+                task.calendar_sync_status = "synced"
+
+        await db.commit()
+        await db.refresh(event)
+        return event
+
+    @classmethod
+    async def delete_calendar_event(
+        cls,
+        user_id: uuid.UUID,
+        event_id: uuid.UUID,
+        db: AsyncSession,
+    ) -> bool:
+        """Delete a calendar event locally and remotely from Google Calendar."""
+        stmt = select(CalendarEvent).where(
+            CalendarEvent.id == event_id,
+            CalendarEvent.user_id == user_id,
+        )
+        res = await db.execute(stmt)
+        event = res.scalar_one_or_none()
+        if not event:
+            raise AppException(
+                detail=f"Calendar event {event_id} not found",
+                status_code=404,
+                error_code="EVENT_NOT_FOUND",
+            )
+
+        if event.external_id:
+            conn_stmt = select(ExternalConnection).where(
+                ExternalConnection.user_id == user_id,
+                ExternalConnection.provider == "google_calendar",
+                ExternalConnection.status == "connected",
+            )
+            conn_res = await db.execute(conn_stmt)
+            conn = conn_res.scalar_one_or_none()
+            if conn:
+                try:
+                    access_token = await cls.get_valid_access_token(conn, db)
+                    provider = cls.get_provider()
+                    await provider.delete_event(access_token, event.external_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete event on remote calendar provider",
+                        event_id=str(event.id),
+                        external_id=event.external_id,
+                        error=str(exc),
+                    )
+
+            # If associated with a task, decouple
+            from app.db.models.task import Task
+            task_stmt = select(Task).where(
+                Task.user_id == user_id,
+                Task.google_calendar_event_id == event.external_id,
+            )
+            task_res = await db.execute(task_stmt)
+            task = task_res.scalar_one_or_none()
+            if task:
+                task.google_calendar_event_id = None
+                task.calendar_sync_status = "unsynced"
+
+        await db.delete(event)
+        await db.commit()
+        return True
+
+    @classmethod
+    async def list_user_events(
+        cls,
+        user_id: uuid.UUID,
+        start_time: datetime,
+        end_time: datetime,
+        db: AsyncSession,
+    ) -> list[CalendarEvent]:
+        """Query user's calendar events within a time range."""
+        start_utc = start_time.astimezone(UTC)
+        end_utc = end_time.astimezone(UTC)
+        stmt = (
+            select(CalendarEvent)
+            .where(
+                CalendarEvent.user_id == user_id,
+                CalendarEvent.start_time < end_utc,
+                CalendarEvent.end_time > start_utc,
+            )
+            .order_by(CalendarEvent.start_time.asc())
+        )
+        res = await db.execute(stmt)
+        return list(res.scalars().all())
 
     @classmethod
     async def detect_conflicts(

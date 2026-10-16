@@ -37,6 +37,9 @@ class Task(Base):
         Index("idx_tasks_user_status", "user_id", "status"),
         Index("idx_tasks_user_deadline", "user_id", "deadline"),
         Index("idx_tasks_user_archived", "user_id", "is_archived"),
+        Index("idx_tasks_user_gcal_event", "user_id", "google_calendar_event_id"),
+        Index("idx_tasks_user_sync_status", "user_id", "calendar_sync_status"),
+        Index("idx_tasks_user_scheduled_start", "user_id", "scheduled_start"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -52,6 +55,12 @@ class Task(Base):
     priority: Mapped[str] = mapped_column(String(5), nullable=False, default="P3")
     duration_minutes: Mapped[int] = mapped_column(nullable=False, default=45)
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    scheduled_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    google_calendar_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    calendar_sync_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unsynced")
+    calendar_sync_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     energy_level: Mapped[str] = mapped_column(String(10), nullable=False, default="medium")
     tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     constraints: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

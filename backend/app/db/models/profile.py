@@ -6,6 +6,7 @@ from typing import Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -95,6 +96,7 @@ class UserPreferences(Base):
         JSON, nullable=False, default=lambda: [1, 2, 3, 4, 5]
     )
     auto_schedule_breaks: Mapped[bool] = mapped_column(nullable=False, default=True)
+    calendar_auto_sync: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     notification_settings: Mapped[dict | None] = mapped_column(
         JSON,
         nullable=True,

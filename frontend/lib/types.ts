@@ -28,6 +28,12 @@ export interface Task {
   tags?: string[];
   constraints?: Record<string, any>;
   is_archived?: boolean;
+  scheduled_start?: string | null;
+  scheduled_end?: string | null;
+  google_calendar_event_id?: string | null;
+  calendar_sync_status?: string | null;
+  calendar_sync_error?: string | null;
+  last_synced_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -41,6 +47,8 @@ export interface TaskCreatePayload {
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
   availability_constraints?: TaskConstraints | null;
+  scheduled_start?: string | null;
+  scheduled_end?: string | null;
   tags?: string[];
   constraints?: Record<string, any>;
   status?: TaskStatus;
@@ -54,6 +62,8 @@ export interface TaskUpdatePayload {
   priority?: TaskPriority;
   deadline?: string | null;
   energy_level?: "low" | "medium" | "high" | null;
+  scheduled_start?: string | null;
+  scheduled_end?: string | null;
   status?: TaskStatus;
   tags?: string[];
   constraints?: Record<string, any>;
@@ -72,6 +82,7 @@ export interface UserPreferences {
   allow_weekend_scheduling?: boolean;
   lunch_break_start?: string;
   lunch_break_duration_minutes?: number;
+  calendar_auto_sync?: boolean;
   notification_settings?: NotificationSettings;
 }
 
@@ -119,6 +130,31 @@ export interface CalendarSyncResult {
   end_time: string;
   provider: string;
   last_synced_at: string;
+}
+
+export interface CalendarEventCreatePayload {
+  title: string;
+  description?: string | null;
+  start_time: string;
+  end_time: string;
+  is_all_day?: boolean;
+  location?: string | null;
+}
+
+export interface CalendarEventUpdatePayload {
+  title?: string;
+  description?: string | null;
+  start_time?: string;
+  end_time?: string;
+  is_all_day?: boolean;
+  location?: string | null;
+  status?: string;
+}
+
+export interface CalendarTaskSyncSummary {
+  synced: number;
+  failed: number;
+  errors: Array<{ task_id: string; title: string; error: string }>;
 }
 
 export interface FreeSlot {
@@ -415,7 +451,9 @@ export interface GmailMessageSummary {
   date?: string | null;
   snippet: string;
   is_unread: boolean;
+  is_starred?: boolean;
   has_attachments: boolean;
+  labels?: string[];
 }
 
 export interface GmailMessageDetail {
@@ -427,9 +465,12 @@ export interface GmailMessageDetail {
   date?: string | null;
   snippet: string;
   body_plain: string;
+  body_html?: string | null;
   sanitized: boolean;
   has_attachments: boolean;
+  attachments?: Array<{ filename: string; mime_type: string; size_bytes?: number }>;
   labels: string[];
+  is_starred?: boolean;
 }
 
 export interface GmailEmailSummaryResult {

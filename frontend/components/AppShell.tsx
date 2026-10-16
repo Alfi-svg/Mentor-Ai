@@ -87,6 +87,18 @@ export function AppShell({ children }: AppShellProps) {
       description: "Backlog & priorities",
     },
     {
+      href: "/calendar",
+      label: "Calendar",
+      icon: Calendar,
+      description: "Interactive calendar & tasks",
+    },
+    {
+      href: "/gmail",
+      label: "Gmail",
+      icon: Mail,
+      description: "Inbox & task extraction",
+    },
+    {
       href: "/actions",
       label: "Approvals & History",
       icon: ShieldAlert,

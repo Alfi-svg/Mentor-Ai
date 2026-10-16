@@ -429,12 +429,55 @@ export const apiClient = {
     );
   },
 
-  async getCalendarEvents(startTime?: string, endTime?: string): Promise<CalendarEvent[]> {
+  async getCalendarEvents(
+    startTimeOrParams?: string | { startTime?: string; endTime?: string; includeTasks?: boolean },
+    endTime?: string
+  ): Promise<CalendarEvent[]> {
     const q = new URLSearchParams();
-    if (startTime) q.set("start_time", startTime);
-    if (endTime) q.set("end_time", endTime);
+    if (typeof startTimeOrParams === "string") {
+      if (startTimeOrParams) q.set("start_time", startTimeOrParams);
+      if (endTime) q.set("end_time", endTime);
+    } else if (startTimeOrParams) {
+      if (startTimeOrParams.startTime) q.set("start_time", startTimeOrParams.startTime);
+      if (startTimeOrParams.endTime) q.set("end_time", startTimeOrParams.endTime);
+      if (startTimeOrParams.includeTasks !== undefined) {
+        q.set("include_tasks", String(startTimeOrParams.includeTasks));
+      }
+    }
     const qs = q.toString() ? `?${q.toString()}` : "";
     return request<CalendarEvent[]>(`/calendar/events${qs}`, { method: "GET" });
+  },
+
+  async createCalendarEvent(payload: import("./types").CalendarEventCreatePayload): Promise<CalendarEvent> {
+    return request<CalendarEvent>("/calendar/events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async updateCalendarEvent(id: string, payload: import("./types").CalendarEventUpdatePayload): Promise<CalendarEvent> {
+    return request<CalendarEvent>(`/calendar/events/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  async deleteCalendarEvent(id: string): Promise<{ status: string; id: string }> {
+    return request<{ status: string; id: string }>(`/calendar/events/${id}`, {
+      method: "DELETE",
+    });
+  },
+
+  async syncCalendarTasks(): Promise<import("./types").CalendarTaskSyncSummary> {
+    return request<import("./types").CalendarTaskSyncSummary>("/calendar/sync/tasks", {
+      method: "POST",
+    });
+  },
+
+  async getCalendarTaskSyncStatus(): Promise<import("./types").CalendarTaskSyncSummary> {
+    return request<import("./types").CalendarTaskSyncSummary>("/calendar/sync/tasks", {
+      method: "GET",
+    });
   },
 
   async syncCalendar(
@@ -554,13 +597,35 @@ export const apiClient = {
   },
 
   async listGmailMessages(
-    query?: string,
-    limit = 10
+    optionsOrQuery?: string | { query?: string; folder?: string; pageToken?: string; limit?: number },
+    fallbackLimit: number = 15
   ): Promise<import("./types").GmailMessageSummary[]> {
-    const params = new URLSearchParams();
-    if (query) params.set("query", query);
-    params.set("limit", String(limit));
-    return request<import("./types").GmailMessageSummary[]>(`/gmail/messages?${params.toString()}`);
+    const q = new URLSearchParams();
+    if (typeof optionsOrQuery === "string") {
+      if (optionsOrQuery) q.set("query", optionsOrQuery);
+      q.set("limit", String(fallbackLimit));
+    } else if (optionsOrQuery) {
+      if (optionsOrQuery.query) q.set("query", optionsOrQuery.query);
+      if (optionsOrQuery.folder) q.set("folder", optionsOrQuery.folder);
+      if (optionsOrQuery.pageToken) q.set("page_token", optionsOrQuery.pageToken);
+      q.set("limit", String(optionsOrQuery.limit ?? fallbackLimit));
+    } else {
+      q.set("limit", String(fallbackLimit));
+    }
+    return request<import("./types").GmailMessageSummary[]>(`/gmail/messages?${q.toString()}`);
+  },
+
+  async modifyGmailMessage(
+    id: string,
+    payload: { add_label_ids?: string[]; remove_label_ids?: string[] }
+  ): Promise<{ id: string; labels: string[]; is_unread: boolean; is_starred: boolean }> {
+    return request<{ id: string; labels: string[]; is_unread: boolean; is_starred: boolean }>(
+      `/gmail/messages/${id}/modify`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    );
   },
 
   async getGmailMessage(id: string): Promise<import("./types").GmailMessageDetail> {

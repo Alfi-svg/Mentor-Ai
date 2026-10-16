@@ -87,8 +87,10 @@ class GmailProvider(Protocol):
         access_token: str,
         max_results: int = 10,
         query: str | None = None,
+        folder: str | None = None,
+        page_token: str | None = None,
     ) -> list[GmailMessageSummary]:
-        """Fetch list of message summaries matching query."""
+        """Fetch list of message summaries matching query and folder."""
         ...
 
     async def get_message_detail(
@@ -97,6 +99,16 @@ class GmailProvider(Protocol):
         message_id: str,
     ) -> GmailMessageDetail:
         """Fetch full details and body of a single message."""
+        ...
+
+    async def modify_message(
+        self,
+        access_token: str,
+        message_id: str,
+        add_label_ids: list[str] | None = None,
+        remove_label_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Add or remove label IDs (e.g. UNREAD, STARRED) from an email message."""
         ...
 
     async def create_draft(

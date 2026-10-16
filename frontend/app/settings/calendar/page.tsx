@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowRight,
   Calendar,
   CheckCircle2,
   Clock,
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { apiClient, ApiClientError } from "@/lib/api-client";
-import { CalendarStatus, ConflictCheckResult } from "@/lib/types";
+import { CalendarStatus, CalendarTaskSyncSummary, ConflictCheckResult } from "@/lib/types";
 
 export default function CalendarSettingsPage() {
   const [status, setStatus] = useState<CalendarStatus | null>(null);
@@ -33,12 +34,28 @@ export default function CalendarSettingsPage() {
   const [conflictResult, setConflictResult] = useState<ConflictCheckResult | null>(null);
   const [checkingConflicts, setCheckingConflicts] = useState<boolean>(false);
 
+  // Auto-sync preferences & task sync state
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState<boolean>(true);
+  const [togglingAutoSync, setTogglingAutoSync] = useState<boolean>(false);
+  const [taskSyncing, setTaskSyncing] = useState<boolean>(false);
+  const [taskSyncSummary, setTaskSyncSummary] = useState<CalendarTaskSyncSummary | null>(null);
+
   const loadStatus = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await apiClient.getCalendarStatus();
-      setStatus(data);
+      const [calStatus, prefs, syncSummary] = await Promise.all([
+        apiClient.getCalendarStatus(),
+        apiClient.getPreferences().catch(() => null),
+        apiClient.getCalendarTaskSyncStatus().catch(() => null),
+      ]);
+      setStatus(calStatus);
+      if (prefs && typeof prefs.calendar_auto_sync === "boolean") {
+        setAutoSyncEnabled(prefs.calendar_auto_sync);
+      }
+      if (syncSummary) {
+        setTaskSyncSummary(syncSummary);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load calendar status.");
     } finally {
@@ -146,6 +163,44 @@ export default function CalendarSettingsPage() {
       }
     } finally {
       setCheckingConflicts(false);
+    }
+  };
+
+  const handleToggleAutoSync = async () => {
+    setTogglingAutoSync(true);
+    setError(null);
+    const nextVal = !autoSyncEnabled;
+    try {
+      await apiClient.updatePreferences({ calendar_auto_sync: nextVal });
+      setAutoSyncEnabled(nextVal);
+      setSyncMessage(
+        nextVal
+          ? "Automatic task-to-calendar synchronization enabled."
+          : "Automatic task-to-calendar synchronization paused."
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update auto-sync preference.");
+    } finally {
+      setTogglingAutoSync(false);
+    }
+  };
+
+  const handleSyncTasksNow = async () => {
+    setTaskSyncing(true);
+    setError(null);
+    setSyncMessage(null);
+    try {
+      const res = await apiClient.syncCalendarTasks();
+      setTaskSyncSummary(res);
+      setSyncMessage(
+        `Task sync completed: ${res.synced} tasks synced successfully${
+          res.failed > 0 ? `, ${res.failed} failed.` : "."
+        }`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to sync tasks to Google Calendar.");
+    } finally {
+      setTaskSyncing(false);
     }
   };
 
@@ -287,6 +342,92 @@ export default function CalendarSettingsPage() {
               </code>
               ) is rejected. Plaintext tokens never leave the backend.
             </p>
+          </div>
+        </div>
+
+        {/* Automatic Task-to-Calendar Synchronization Card */}
+        <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-6 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-zinc-800 pb-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 text-brand-400" />
+                <h2 className="text-base font-bold text-white">
+                  Automatic Task-to-Calendar Synchronization
+                </h2>
+              </div>
+              <p className="text-xs text-zinc-400 leading-relaxed max-w-xl">
+                Automatically mirror scheduled tasks to your Google Calendar when tasks are created, rescheduled,
+                or approved by the AI scheduler. Mark tasks completed to update the title to [DONE], or archive them to remove the calendar event.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleToggleAutoSync}
+                disabled={togglingAutoSync}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  autoSyncEnabled ? "bg-brand-600" : "bg-zinc-700"
+                } ${togglingAutoSync ? "opacity-50" : ""}`}
+                role="switch"
+                aria-checked={autoSyncEnabled}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    autoSyncEnabled ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+              <span className="text-xs font-semibold text-zinc-300">
+                {autoSyncEnabled ? "Auto-Sync Active" : "Paused"}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pt-1">
+            <div className="space-y-1">
+              <span className="text-xs font-semibold text-white">Manual Task Reconciliation</span>
+              <p className="text-xs text-zinc-400">
+                Force retry any pending or failed task synchronizations across your entire schedule.
+              </p>
+            </div>
+
+            <button
+              onClick={handleSyncTasksNow}
+              disabled={taskSyncing || !status?.is_connected}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${taskSyncing ? "animate-spin" : ""}`} />
+              <span>{taskSyncing ? "Reconciling..." : "Force Sync Tasks Now"}</span>
+            </button>
+          </div>
+
+          {taskSyncSummary && (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-850 p-3 flex items-center justify-between text-xs">
+              <span className="text-zinc-400">Last Task Sync Status:</span>
+              <div className="flex items-center gap-3">
+                <span className="text-emerald-400 font-semibold">{taskSyncSummary.synced} Synced</span>
+                {taskSyncSummary.failed > 0 && (
+                  <span className="text-rose-400 font-semibold">{taskSyncSummary.failed} Failed</span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Quick link to Calendar workspace */}
+          <div className="rounded-lg border border-brand-500/20 bg-brand-500/5 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <span className="text-xs font-bold text-white">Interactive Calendar Workspace</span>
+              <p className="text-xs text-zinc-400">
+                View your scheduled tasks and Google Calendar events side-by-side in Month, Week, or Day view.
+              </p>
+            </div>
+            <Link
+              href="/calendar"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition-colors shrink-0"
+            >
+              <span>Open Calendar</span>
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
           </div>
         </div>
 

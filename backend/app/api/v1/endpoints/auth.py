@@ -45,6 +45,7 @@ class PreferencesResponse(BaseModel):
     available_days: list[int]
     auto_schedule_breaks: bool
     timezone: str = "UTC"
+    calendar_auto_sync: bool = True
     notification_settings: dict | None = None
 
 
@@ -68,6 +69,7 @@ class PreferencesUpdateRequest(BaseModel):
     max_focus_hours_per_day: int | None = Field(default=None, ge=1, le=16)
     available_days: list[int] | None = None
     auto_schedule_breaks: bool | None = None
+    calendar_auto_sync: bool | None = None
     timezone: str | None = None
     notification_settings: dict | None = None
 
@@ -225,6 +227,8 @@ async def get_me(
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
         timezone=profile.timezone,
+        calendar_auto_sync=getattr(pref, "calendar_auto_sync", True),
+        notification_settings=getattr(pref, "notification_settings", None),
     )
 
     return UserProfileResponse(
@@ -279,6 +283,7 @@ async def get_preferences(
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
         timezone=profile.timezone,
+        calendar_auto_sync=getattr(pref, "calendar_auto_sync", True),
         notification_settings=pref.notification_settings,
     )
 
@@ -345,6 +350,9 @@ async def update_preferences(
     if request.auto_schedule_breaks is not None:
         pref.auto_schedule_breaks = request.auto_schedule_breaks
         updated_fields.append("auto_schedule_breaks")
+    if request.calendar_auto_sync is not None:
+        pref.calendar_auto_sync = request.calendar_auto_sync
+        updated_fields.append("calendar_auto_sync")
     if request.timezone is not None:
         profile.timezone = request.timezone
         updated_fields.append("timezone")
@@ -376,5 +384,6 @@ async def update_preferences(
         available_days=pref.available_days,
         auto_schedule_breaks=pref.auto_schedule_breaks,
         timezone=profile.timezone,
+        calendar_auto_sync=getattr(pref, "calendar_auto_sync", True),
         notification_settings=pref.notification_settings,
     )

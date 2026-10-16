@@ -201,8 +201,10 @@ class GoogleGmailAdapter(GmailProvider):
         access_token: str,
         max_results: int = 10,
         query: str | None = None,
+        folder: str | None = None,
+        page_token: str | None = None,
     ) -> list[GmailMessageSummary]:
-        """Fetch list of message summaries matching query."""
+        """Fetch list of message summaries matching query and folder."""
         client = await self._get_client()
         should_close = client != self._client
 
@@ -210,6 +212,14 @@ class GoogleGmailAdapter(GmailProvider):
         params: dict[str, Any] = {"maxResults": safe_max}
         if query:
             params["q"] = query
+
+        if folder:
+            folder_upper = folder.upper()
+            if folder_upper in ("INBOX", "STARRED", "SENT", "DRAFT", "TRASH", "SPAM"):
+                params["labelIds"] = [folder_upper]
+
+        if page_token:
+            params["pageToken"] = page_token
 
         try:
             resp = await client.get(
@@ -245,6 +255,7 @@ class GoogleGmailAdapter(GmailProvider):
                     if m_resp.status_code == 200:
                         m_data = m_resp.json()
                         headers = {h["name"].lower(): h["value"] for h in m_data.get("payload", {}).get("headers", [])}
+                        lbls = m_data.get("labelIds", [])
                         summaries.append(
                             GmailMessageSummary(
                                 id=m_data["id"],
@@ -254,11 +265,13 @@ class GoogleGmailAdapter(GmailProvider):
                                 subject=sanitize_email_text(headers.get("subject", "(No Subject)")),
                                 date=headers.get("date"),
                                 snippet=sanitize_email_text(m_data.get("snippet", "")),
-                                is_unread="UNREAD" in m_data.get("labelIds", []),
+                                is_unread="UNREAD" in lbls,
+                                is_starred="STARRED" in lbls,
                                 has_attachments=any(
                                     part.get("filename")
                                     for part in m_data.get("payload", {}).get("parts", [])
                                 ),
+                                labels=lbls,
                             )
                         )
                 except Exception as exc:
@@ -300,6 +313,43 @@ class GoogleGmailAdapter(GmailProvider):
 
         return ""
 
+    def _extract_html_text(self, payload: dict[str, Any]) -> str | None:
+        """Extract html body from nested Gmail message payload parts."""
+        mime_type = payload.get("mimeType", "")
+        body_data = payload.get("body", {}).get("data")
+
+        if mime_type == "text/html" and body_data:
+            try:
+                decoded = base64.urlsafe_b64decode(body_data.encode("utf-8") + b"==")
+                return decoded.decode("utf-8", errors="replace")
+            except Exception:
+                pass
+
+        parts = payload.get("parts", [])
+        for part in parts:
+            extracted = self._extract_html_text(part)
+            if extracted:
+                return extracted
+
+        return None
+
+    def _extract_attachments_summary(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Collect attachment names, mime types, and file sizes."""
+        attachments: list[dict[str, Any]] = []
+        for part in payload.get("parts", []):
+            fname = part.get("filename")
+            if fname:
+                attachments.append(
+                    {
+                        "filename": fname,
+                        "mime_type": part.get("mimeType", "application/octet-stream"),
+                        "size": part.get("body", {}).get("size", 0),
+                    }
+                )
+            if "parts" in part:
+                attachments.extend(self._extract_attachments_summary(part))
+        return attachments
+
     async def get_message_detail(
         self,
         access_token: str,
@@ -330,6 +380,9 @@ class GoogleGmailAdapter(GmailProvider):
                 raw_body = m_data.get("snippet", "")
 
             sanitized_body = sanitize_email_text(raw_body)
+            raw_html = self._extract_html_text(payload)
+            attachments = self._extract_attachments_summary(payload)
+            labels = m_data.get("labelIds", [])
 
             return GmailMessageDetail(
                 id=m_data["id"],
@@ -340,13 +393,47 @@ class GoogleGmailAdapter(GmailProvider):
                 date=headers.get("date"),
                 snippet=sanitize_email_text(m_data.get("snippet", "")),
                 body_plain=sanitized_body,
+                body_html=raw_html,
                 sanitized=True,
-                has_attachments=any(
-                    part.get("filename")
-                    for part in payload.get("parts", [])
-                ),
-                labels=m_data.get("labelIds", []),
+                has_attachments=len(attachments) > 0,
+                attachments=attachments,
+                labels=labels,
+                is_starred="STARRED" in labels,
             )
+        except httpx.TimeoutException as exc:
+            raise GmailTimeoutException() from exc
+        finally:
+            if should_close:
+                await client.aclose()
+
+    async def modify_message(
+        self,
+        access_token: str,
+        message_id: str,
+        add_label_ids: list[str] | None = None,
+        remove_label_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Add or remove label IDs (e.g. UNREAD, STARRED) from a message."""
+        client = await self._get_client()
+        should_close = client != self._client
+        payload: dict[str, Any] = {
+            "addLabelIds": add_label_ids or [],
+            "removeLabelIds": remove_label_ids or [],
+        }
+
+        try:
+            resp = await client.post(
+                f"{GMAIL_API_BASE}/messages/{message_id}/modify",
+                headers={"Authorization": f"Bearer {access_token}"},
+                json=payload,
+            )
+            if resp.status_code == 401:
+                raise GmailAuthExpiredException()
+            if resp.status_code == 404:
+                raise GmailProviderException("Message not found in Gmail.", status_code=404)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("labelIds", [])
         except httpx.TimeoutException as exc:
             raise GmailTimeoutException() from exc
         finally:

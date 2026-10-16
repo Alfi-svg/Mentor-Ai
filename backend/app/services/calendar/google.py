@@ -20,6 +20,7 @@ from app.services.calendar.base import (
 )
 from app.services.calendar.models import (
     CalendarEventCreate,
+    CalendarEventUpdate,
     NormalizedCalendarEvent,
     OAuthTokenData,
 )
@@ -38,6 +39,14 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
     "openid",
 ]
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 class GoogleCalendarAdapter(CalendarProvider):
@@ -234,8 +243,8 @@ class GoogleCalendarAdapter(CalendarProvider):
 
         while True:
             params: dict[str, Any] = {
-                "timeMin": start_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "timeMax": end_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timeMin": _ensure_utc(start_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timeMax": _ensure_utc(end_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "singleEvents": "true",
                 "orderBy": "startTime",
                 "maxResults": 250,
@@ -302,11 +311,11 @@ class GoogleCalendarAdapter(CalendarProvider):
             body["end"] = {"date": event_data.end_time.strftime("%Y-%m-%d")}
         else:
             body["start"] = {
-                "dateTime": event_data.start_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "dateTime": _ensure_utc(event_data.start_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "timeZone": "UTC",
             }
             body["end"] = {
-                "dateTime": event_data.end_time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "dateTime": _ensure_utc(event_data.end_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "timeZone": "UTC",
             }
 
@@ -325,6 +334,52 @@ class GoogleCalendarAdapter(CalendarProvider):
         if not verified_event:
             raise CalendarProviderException(
                 f"Post-condition verification failed: created event {external_id} could not be read back from Google Calendar.",
+                status_code=502,
+            )
+
+        return verified_event
+
+    async def update_event(
+        self, access_token: str, external_id: str, event_data: CalendarEventUpdate
+    ) -> NormalizedCalendarEvent:
+        """Update an existing event on Google Calendar and verify with follow-up read."""
+        url = f"{GOOGLE_CALENDAR_API_BASE}/calendars/primary/events/{external_id}"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        body: dict[str, Any] = {}
+        if event_data.title is not None:
+            body["summary"] = event_data.title
+        if event_data.description is not None:
+            body["description"] = event_data.description
+        if event_data.location is not None:
+            body["location"] = event_data.location
+        if event_data.status is not None:
+            body["status"] = event_data.status
+        if event_data.start_time is not None:
+            body["start"] = {
+                "dateTime": _ensure_utc(event_data.start_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timeZone": "UTC",
+            }
+        if event_data.end_time is not None:
+            body["end"] = {
+                "dateTime": _ensure_utc(event_data.end_time).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "timeZone": "UTC",
+            }
+
+        res = await self._execute_with_retry("PATCH", url, json=body, headers=headers)
+        if res.status_code not in (200, 201):
+            raise CalendarProviderException(
+                f"Google Calendar update failed ({res.status_code}): {res.text}",
+                status_code=res.status_code,
+            )
+
+        verified_event = await self.get_event(access_token, external_id)
+        if not verified_event:
+            raise CalendarProviderException(
+                f"Post-condition verification failed: updated event {external_id} could not be read back from Google Calendar.",
                 status_code=502,
             )
 

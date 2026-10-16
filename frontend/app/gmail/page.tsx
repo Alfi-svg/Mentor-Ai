@@ -1,0 +1,802 @@
+"use client";
+
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import Link from "next/link";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  FileText,
+  Inbox,
+  Mail,
+  Paperclip,
+  PenSquare,
+  RefreshCw,
+  Search,
+  Send,
+  Sparkles,
+  Star,
+  Tag,
+  Trash2,
+  User,
+  X,
+} from "lucide-react";
+import { AppShell } from "@/components/AppShell";
+import { apiClient, ApiClientError } from "@/lib/api-client";
+import {
+  EmailTaskCandidate,
+  GmailDraftCreate,
+  GmailEmailSummaryResult,
+  GmailMessageDetail,
+  GmailMessageSummary,
+  GmailSendPayload,
+  GmailStatus,
+} from "@/lib/types";
+
+type GmailFolder = "INBOX" | "STARRED" | "SENT" | "DRAFT";
+
+export default function GmailWorkspacePage() {
+  const [activeFolder, setActiveFolder] = useState<GmailFolder>("INBOX");
+  const [messages, setMessages] = useState<GmailMessageSummary[]>([]);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<GmailMessageDetail | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [loadingList, setLoadingList] = useState<boolean>(true);
+  const [loadingDetail, setLoadingDetail] = useState<boolean>(false);
+  const [status, setStatus] = useState<GmailStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // AI Summarization & Task Extraction state
+  const [summaryResult, setSummaryResult] = useState<GmailEmailSummaryResult | null>(null);
+  const [summarizing, setSummarizing] = useState<boolean>(false);
+  const [extractedTasks, setExtractedTasks] = useState<EmailTaskCandidate[] | null>(null);
+  const [extracting, setExtracting] = useState<boolean>(false);
+
+  // Compose / Draft modal state
+  const [isComposeOpen, setIsComposeOpen] = useState<boolean>(false);
+  const [savingDraft, setSavingDraft] = useState<boolean>(false);
+  const [stagingSend, setStagingSend] = useState<boolean>(false);
+  const [confirmSendOpen, setConfirmSendOpen] = useState<boolean>(false);
+  const [composeForm, setComposeForm] = useState<GmailDraftCreate>({
+    to: "",
+    subject: "",
+    body: "",
+  });
+
+  // Mobile navigation state
+  const [mobilePane, setMobilePane] = useState<"list" | "detail">("list");
+
+  // Load account status
+  useEffect(() => {
+    apiClient
+      .getGmailStatus()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
+
+  // Fetch messages when folder or search query changes
+  const loadMessages = useCallback(async () => {
+    setLoadingList(true);
+    setError(null);
+    try {
+      const data = await apiClient.listGmailMessages({
+        folder: activeFolder,
+        query: searchQuery || undefined,
+        limit: 25,
+      });
+      setMessages(data);
+      // Auto-select first message on desktop if none selected
+      if (data.length > 0 && !selectedMessageId) {
+        setSelectedMessageId(data[0].id);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load messages.");
+    } finally {
+      setLoadingList(false);
+    }
+  }, [activeFolder, searchQuery, selectedMessageId]);
+
+  useEffect(() => {
+    loadMessages();
+  }, [loadMessages]);
+
+  // Load message detail when selectedMessageId changes
+  useEffect(() => {
+    if (!selectedMessageId) {
+      setSelectedDetail(null);
+      setSummaryResult(null);
+      setExtractedTasks(null);
+      return;
+    }
+
+    let isMounted = true;
+    setLoadingDetail(true);
+    setSummaryResult(null);
+    setExtractedTasks(null);
+
+    apiClient
+      .getGmailMessage(selectedMessageId)
+      .then((detail) => {
+        if (isMounted) setSelectedDetail(detail);
+      })
+      .catch((err) => {
+        if (isMounted) setError(err instanceof Error ? err.message : "Failed to load message detail.");
+      })
+      .finally(() => {
+        if (isMounted) setLoadingDetail(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedMessageId]);
+
+  // Star / Unstar message
+  const handleToggleStar = async (msgId: string, currentStarred?: boolean) => {
+    const nextStarred = !currentStarred;
+    try {
+      await apiClient.modifyGmailMessage(msgId, {
+        add_label_ids: nextStarred ? ["STARRED"] : undefined,
+        remove_label_ids: !nextStarred ? ["STARRED"] : undefined,
+      });
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, is_starred: nextStarred } : m))
+      );
+      if (selectedDetail && selectedDetail.id === msgId) {
+        setSelectedDetail({ ...selectedDetail, is_starred: nextStarred });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update star.");
+    }
+  };
+
+  // Mark Read / Unread
+  const handleToggleUnread = async (msgId: string, currentUnread: boolean) => {
+    const nextUnread = !currentUnread;
+    try {
+      await apiClient.modifyGmailMessage(msgId, {
+        add_label_ids: nextUnread ? ["UNREAD"] : undefined,
+        remove_label_ids: !nextUnread ? ["UNREAD"] : undefined,
+      });
+      setMessages((prev) =>
+        prev.map((m) => (m.id === msgId ? { ...m, is_unread: nextUnread } : m))
+      );
+      if (selectedDetail && selectedDetail.id === msgId) {
+        const labels = new Set(selectedDetail.labels || []);
+        if (nextUnread) labels.add("UNREAD");
+        else labels.delete("UNREAD");
+        setSelectedDetail({ ...selectedDetail, labels: Array.from(labels) });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update read state.");
+    }
+  };
+
+  // Summarize email with AI
+  const handleSummarize = async () => {
+    if (!selectedMessageId) return;
+    setSummarizing(true);
+    setError(null);
+    try {
+      const res = await apiClient.summarizeGmailMessage(selectedMessageId);
+      setSummaryResult(res);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to summarize email.");
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  // Extract tasks from email
+  const handleExtractTasks = async () => {
+    if (!selectedMessageId) return;
+    setExtracting(true);
+    setError(null);
+    try {
+      const candidates = await apiClient.extractTasksFromEmails([selectedMessageId]);
+      setExtractedTasks(candidates);
+      if (candidates.length === 0) {
+        setSuccessMessage("No actionable tasks found in this email.");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to extract tasks.");
+    } finally {
+      setExtracting(false);
+    }
+  };
+
+  // Create Task from Candidate
+  const handleCreateTaskFromCandidate = async (candidate: EmailTaskCandidate) => {
+    try {
+      await apiClient.createTask({
+        title: candidate.title,
+        description: candidate.description,
+        estimated_duration_minutes: candidate.estimated_duration_minutes,
+        priority: candidate.priority,
+        deadline: candidate.proposed_deadline,
+        energy_level: candidate.energy_level,
+      });
+      setSuccessMessage(`Created task "${candidate.title}" in your backlog.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create task.");
+    }
+  };
+
+  // Save Draft
+  const handleSaveDraft = async () => {
+    if (!composeForm.to || !composeForm.subject) {
+      setError("Recipient and subject are required to save draft.");
+      return;
+    }
+    setSavingDraft(true);
+    setError(null);
+    try {
+      await apiClient.createGmailDraft(composeForm);
+      setIsComposeOpen(false);
+      setSuccessMessage("Draft saved successfully.");
+      setComposeForm({ to: "", subject: "", body: "" });
+      if (activeFolder === "DRAFT") loadMessages();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save draft.");
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  // Stage Send Email (requires confirmation)
+  const handleSendEmailConfirmed = async () => {
+    setStagingSend(true);
+    setError(null);
+    setConfirmSendOpen(false);
+    try {
+      const payload: GmailSendPayload = {
+        to: composeForm.to,
+        subject: composeForm.subject,
+        body: composeForm.body,
+      };
+      await apiClient.stageSendEmail(payload);
+      setIsComposeOpen(false);
+      setSuccessMessage(
+        `Email staged for delivery to ${composeForm.to}. Check Approvals to execute transmission.`
+      );
+      setComposeForm({ to: "", subject: "", body: "" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to stage email transmission.");
+    } finally {
+      setStagingSend(false);
+    }
+  };
+
+  return (
+    <AppShell>
+      <div className="flex h-[calc(100vh-5rem)] flex-col space-y-3">
+        {/* Workspace Top Bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-zinc-800 pb-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600/10 border border-brand-500/20 text-brand-400">
+              <Mail className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight text-white">Gmail Workspace</h1>
+                {status?.is_connected ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-0.5">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    <span>{status.account_email || "Connected"}</span>
+                  </span>
+                ) : (
+                  <Link
+                    href="/settings/gmail"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2 py-0.5 hover:underline"
+                  >
+                    <span>Connect Gmail</span>
+                    <ExternalLink className="h-2.5 w-2.5" />
+                  </Link>
+                )}
+              </div>
+              <p className="text-xs text-zinc-400">
+                Inbox management, email-to-task extraction, and AI summarization
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsComposeOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition-colors shadow-sm"
+            >
+              <PenSquare className="h-4 w-4" />
+              <span>Compose</span>
+            </button>
+            <button
+              onClick={loadMessages}
+              disabled={loadingList}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+              title="Refresh messages"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loadingList ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Global Notifications */}
+        {error && (
+          <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
+            <span>{error}</span>
+          </div>
+        )}
+        {successMessage && (
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-xs text-emerald-300">
+            <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+            <span>{successMessage}</span>
+          </div>
+        )}
+
+        {/* 3-Panel Desktop Layout / Responsive Mobile */}
+        <div className="flex-1 flex overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-900/40">
+          {/* PANEL 1: Folders Navigation (Left) */}
+          <aside className="hidden md:flex w-52 flex-col border-r border-zinc-800 bg-zinc-900/60 p-3 space-y-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400 px-2 py-1">
+              Mailboxes
+            </span>
+            {[
+              { id: "INBOX", label: "Inbox", icon: Inbox },
+              { id: "STARRED", label: "Starred", icon: Star },
+              { id: "SENT", label: "Sent", icon: Send },
+              { id: "DRAFT", label: "Drafts", icon: FileText },
+            ].map((folder) => {
+              const Icon = folder.icon;
+              const isActive = activeFolder === folder.id;
+              return (
+                <button
+                  key={folder.id}
+                  onClick={() => {
+                    setActiveFolder(folder.id as GmailFolder);
+                    setMobilePane("list");
+                  }}
+                  className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                    isActive
+                      ? "bg-brand-600/20 text-brand-300 border border-brand-500/30"
+                      : "text-zinc-400 hover:bg-zinc-800/60 hover:text-white"
+                  }`}
+                >
+                  <Icon className={`h-4 w-4 ${isActive ? "text-brand-400" : "text-zinc-500"}`} />
+                  <span>{folder.label}</span>
+                </button>
+              );
+            })}
+          </aside>
+
+          {/* PANEL 2: Message List (Middle) */}
+          <div
+            className={`w-full md:w-80 lg:w-96 flex flex-col border-r border-zinc-800 bg-zinc-900/30 ${
+              mobilePane === "detail" ? "hidden md:flex" : "flex"
+            }`}
+          >
+            {/* Search Header */}
+            <div className="p-3 border-b border-zinc-800">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-zinc-500" />
+                <input
+                  type="text"
+                  placeholder="Search emails..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-800/80 pl-8 pr-3 py-1.5 text-xs text-white placeholder-zinc-500 focus:border-brand-500 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Folder / Count Bar */}
+            <div className="flex items-center justify-between px-3 py-2 bg-zinc-900/80 border-b border-zinc-800 text-[11px] text-zinc-400">
+              <span className="font-bold text-zinc-300 capitalize">{activeFolder.toLowerCase()}</span>
+              <span>{messages.length} messages</span>
+            </div>
+
+            {/* Messages List */}
+            <div className="flex-1 overflow-y-auto divide-y divide-zinc-800/60">
+              {loadingList ? (
+                <div className="flex items-center justify-center p-8 text-xs text-zinc-500 gap-2">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin text-brand-400" />
+                  <span>Loading messages...</span>
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="text-center p-8 text-xs text-zinc-500">
+                  No messages found in {activeFolder.toLowerCase()}
+                </div>
+              ) : (
+                messages.map((msg) => {
+                  const isSelected = selectedMessageId === msg.id;
+                  const isUnread = msg.is_unread;
+                  return (
+                    <div
+                      key={msg.id}
+                      onClick={() => {
+                        setSelectedMessageId(msg.id);
+                        setMobilePane("detail");
+                      }}
+                      className={`group cursor-pointer p-3 transition-colors ${
+                        isSelected
+                          ? "bg-brand-500/10 border-l-2 border-l-brand-500"
+                          : isUnread
+                          ? "bg-zinc-850/50 hover:bg-zinc-800/60"
+                          : "hover:bg-zinc-800/40"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1 mb-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          {isUnread && (
+                            <span className="h-2 w-2 rounded-full bg-brand-500 shrink-0" />
+                          )}
+                          <span
+                            className={`text-xs truncate ${
+                              isUnread ? "font-bold text-white" : "font-medium text-zinc-300"
+                            }`}
+                          >
+                            {msg.sender}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleStar(msg.id, msg.is_starred);
+                          }}
+                          className="text-zinc-500 hover:text-amber-400 transition-colors p-0.5"
+                        >
+                          <Star
+                            className={`h-3.5 w-3.5 ${
+                              msg.is_starred
+                                ? "fill-amber-400 text-amber-400"
+                                : "text-zinc-600 hover:text-zinc-400"
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      <div
+                        className={`text-xs truncate mb-1 ${
+                          isUnread ? "font-semibold text-white" : "text-zinc-300"
+                        }`}
+                      >
+                        {msg.subject || "(no subject)"}
+                      </div>
+
+                      <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">
+                        {msg.snippet}
+                      </p>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* PANEL 3: Message Reading Pane (Right) */}
+          <div
+            className={`flex-1 flex flex-col bg-zinc-900/60 overflow-y-auto ${
+              mobilePane === "list" ? "hidden md:flex" : "flex"
+            }`}
+          >
+            {/* Mobile Back Button */}
+            <div className="flex md:hidden items-center p-3 border-b border-zinc-800">
+              <button
+                onClick={() => setMobilePane("list")}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-400 hover:underline"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span>Back to messages</span>
+              </button>
+            </div>
+
+            {loadingDetail ? (
+              <div className="flex flex-1 items-center justify-center text-xs text-zinc-500 gap-2">
+                <RefreshCw className="h-4 w-4 animate-spin text-brand-400" />
+                <span>Loading email details...</span>
+              </div>
+            ) : selectedDetail ? (
+              <div className="flex-1 flex flex-col p-6 space-y-5">
+                {/* Email Header */}
+                <div className="space-y-3 border-b border-zinc-800 pb-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <h2 className="text-lg font-bold text-white tracking-tight">
+                      {selectedDetail.subject || "(no subject)"}
+                    </h2>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() =>
+                          handleToggleStar(selectedDetail.id, selectedDetail.is_starred)
+                        }
+                        className="rounded border border-zinc-700 bg-zinc-800 p-1.5 text-zinc-400 hover:text-amber-400"
+                        title={selectedDetail.is_starred ? "Unstar" : "Star"}
+                      >
+                        <Star
+                          className={`h-4 w-4 ${
+                            selectedDetail.is_starred
+                              ? "fill-amber-400 text-amber-400"
+                              : ""
+                          }`}
+                        />
+                      </button>
+                      <button
+                        onClick={() =>
+                          handleToggleUnread(
+                            selectedDetail.id,
+                            selectedDetail.labels.includes("UNREAD")
+                          )
+                        }
+                        className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs font-semibold text-zinc-300 hover:text-white"
+                      >
+                        {selectedDetail.labels.includes("UNREAD") ? "Mark Read" : "Mark Unread"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between text-xs text-zinc-400 gap-2">
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2 text-zinc-200">
+                        <User className="h-3.5 w-3.5 text-brand-400" />
+                        <span className="font-semibold">{selectedDetail.sender}</span>
+                      </div>
+                      {selectedDetail.recipient && (
+                        <div className="text-[11px] text-zinc-500">To: {selectedDetail.recipient}</div>
+                      )}
+                    </div>
+                    {selectedDetail.date && (
+                      <div className="flex items-center gap-1.5 text-[11px] font-mono text-zinc-400">
+                        <Clock className="h-3 w-3" />
+                        <span>{new Date(selectedDetail.date).toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* AI LifeOps Action Toolbar */}
+                <div className="flex flex-wrap items-center gap-2 bg-brand-500/5 border border-brand-500/20 rounded-lg p-3">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-brand-300 mr-2">
+                    <Sparkles className="h-4 w-4 text-brand-400" />
+                    <span>AI LifeOps</span>
+                  </div>
+
+                  <button
+                    onClick={handleSummarize}
+                    disabled={summarizing}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-zinc-800 border border-zinc-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${summarizing ? "animate-spin" : ""}`} />
+                    <span>{summarizing ? "Analyzing..." : "Summarize Email"}</span>
+                  </button>
+
+                  <button
+                    onClick={handleExtractTasks}
+                    disabled={extracting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 disabled:opacity-50 transition-colors"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${extracting ? "animate-spin" : ""}`} />
+                    <span>{extracting ? "Extracting..." : "Extract Tasks to Backlog"}</span>
+                  </button>
+                </div>
+
+                {/* AI Summary Card (if triggered) */}
+                {summaryResult && (
+                  <div className="rounded-lg border border-brand-500/30 bg-zinc-900/90 p-4 space-y-3 text-xs">
+                    <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
+                      <span className="font-bold text-white flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-brand-400" />
+                        <span>Verified AI Email Summary</span>
+                      </span>
+                      <span className="text-[10px] uppercase font-bold text-brand-400">
+                        {(summaryResult.confidence_score * 100).toFixed(0)}% Confidence
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[10px] uppercase font-bold text-zinc-400">
+                        Verified Facts (Ground Truth)
+                      </span>
+                      <ul className="list-disc list-inside space-y-1 text-zinc-300">
+                        {summaryResult.verified_facts.map((fact, idx) => (
+                          <li key={idx}>{fact}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    <div className="space-y-1 pt-1 border-t border-zinc-800">
+                      <span className="text-[10px] uppercase font-bold text-zinc-400">
+                        AI Interpretation
+                      </span>
+                      <p className="text-zinc-300 leading-relaxed italic">
+                        {summaryResult.ai_interpretation}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Extracted Tasks (if triggered) */}
+                {extractedTasks && extractedTasks.length > 0 && (
+                  <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-3 text-xs">
+                    <span className="font-bold text-white flex items-center gap-1.5">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      <span>Extracted Tasks ({extractedTasks.length})</span>
+                    </span>
+                    <div className="space-y-2">
+                      {extractedTasks.map((t, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between rounded border border-zinc-800 bg-zinc-900/80 p-2.5"
+                        >
+                          <div>
+                            <div className="font-semibold text-white">{t.title}</div>
+                            <div className="text-[11px] text-zinc-400">
+                              Duration: {t.estimated_duration_minutes}m • Priority: {t.priority}
+                              {t.proposed_deadline && (
+                                <span> • Due: {new Date(t.proposed_deadline).toLocaleDateString()}</span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleCreateTaskFromCandidate(t)}
+                            className="rounded bg-brand-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-brand-500 transition-colors"
+                          >
+                            Add to Tasks
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Email Body Content */}
+                <div className="flex-1 space-y-3">
+                  <span className="text-[10px] uppercase font-bold text-zinc-400">Content</span>
+                  <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-5 text-xs text-zinc-200 leading-relaxed whitespace-pre-wrap font-sans">
+                    {selectedDetail.body_plain}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-center p-8 text-zinc-500">
+                <div>
+                  <Mail className="h-10 w-10 mx-auto text-zinc-600 mb-2" />
+                  <p className="font-semibold text-sm">Select an email to view</p>
+                  <p className="text-xs text-zinc-600 mt-1">
+                    Choose a conversation from the list to read content and extract tasks.
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Compose / Draft Modal */}
+        {isComposeOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+            <div className="w-full max-w-lg rounded-xl border border-zinc-800 bg-zinc-900 p-6 space-y-4 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <PenSquare className="h-4 w-4 text-brand-400" />
+                  <h2 className="text-base font-bold text-white">Compose Message</h2>
+                </div>
+                <button
+                  onClick={() => setIsComposeOpen(false)}
+                  className="text-zinc-400 hover:text-white"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-zinc-400 font-semibold mb-1">To</label>
+                  <input
+                    type="email"
+                    required
+                    value={composeForm.to}
+                    onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white focus:border-brand-500 focus:outline-none"
+                    placeholder="recipient@example.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-zinc-400 font-semibold mb-1">Subject</label>
+                  <input
+                    type="text"
+                    required
+                    value={composeForm.subject}
+                    onChange={(e) => setComposeForm({ ...composeForm, subject: e.target.value })}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white focus:border-brand-500 focus:outline-none"
+                    placeholder="Subject line"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-zinc-400 font-semibold mb-1">Body</label>
+                  <textarea
+                    rows={8}
+                    required
+                    value={composeForm.body}
+                    onChange={(e) => setComposeForm({ ...composeForm, body: e.target.value })}
+                    className="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-white focus:border-brand-500 focus:outline-none font-sans"
+                    placeholder="Write your email here..."
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-3 border-t border-zinc-800">
+                  <button
+                    type="button"
+                    onClick={handleSaveDraft}
+                    disabled={savingDraft}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-1.5 font-semibold text-zinc-300 hover:bg-zinc-700 transition-colors"
+                  >
+                    <FileText className="h-3.5 w-3.5" />
+                    <span>{savingDraft ? "Saving..." : "Save Draft"}</span>
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsComposeOpen(false)}
+                      className="rounded-lg border border-zinc-700 px-3.5 py-1.5 text-zinc-300 hover:bg-zinc-800 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmSendOpen(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-1.5 font-semibold text-white hover:bg-brand-500 transition-colors"
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                      <span>Send</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Explicit Consequential Action Confirmation Dialog for Sending Email */}
+        {confirmSendOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+            <div className="w-full max-w-sm rounded-xl border border-amber-500/40 bg-zinc-900 p-6 space-y-4 shadow-2xl">
+              <div className="flex items-center gap-2.5 text-amber-400">
+                <AlertTriangle className="h-5 w-5 shrink-0" />
+                <h3 className="font-bold text-sm text-white">Confirm Email Delivery</h3>
+              </div>
+              <p className="text-xs text-zinc-300 leading-relaxed">
+                Sending an email is an external consequential write action that cannot be undone. Are you sure you want to transmit this message to:
+              </p>
+              <div className="rounded border border-zinc-800 bg-zinc-850 p-2 text-xs font-mono text-zinc-200">
+                To: {composeForm.to}
+                <br />
+                Subject: {composeForm.subject}
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setConfirmSendOpen(false)}
+                  className="rounded-lg border border-zinc-700 px-3.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSendEmailConfirmed}
+                  disabled={stagingSend}
+                  className="rounded-lg bg-amber-600 px-4 py-1.5 text-xs font-bold text-white hover:bg-amber-500 transition-colors"
+                >
+                  {stagingSend ? "Staging..." : "Confirm & Send"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}

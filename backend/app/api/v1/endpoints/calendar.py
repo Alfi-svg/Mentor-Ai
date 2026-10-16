@@ -1,26 +1,30 @@
-"""Calendar endpoints for connection, OAuth callback, synchronization, and conflict checking."""
-
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-
 from urllib.parse import quote_plus
+
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppException
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.models.calendar import CalendarEvent
+from app.db.models.task import Task
 from app.db.session import get_db
 from app.services.calendar.models import (
     CalendarConnectResponse,
+    CalendarEventCreate,
+    CalendarEventUpdate,
     CalendarStatusResponse,
     CalendarSyncResponse,
     ConflictCheckResponse,
 )
 from app.services.calendar.service import CalendarService
+from app.services.calendar_sync_service import CalendarSyncService
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
@@ -140,16 +144,39 @@ async def disconnect_calendar(
     }
 
 
+class CreateEventRequest(BaseModel):
+    """Payload to create an event on calendar."""
+
+    title: str = Field(min_length=1, max_length=200)
+    start_time: datetime
+    end_time: datetime
+    description: str | None = None
+    location: str | None = None
+    is_all_day: bool = False
+
+
+class UpdateEventRequest(BaseModel):
+    """Payload to update an existing event on calendar."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    description: str | None = None
+    location: str | None = None
+    is_all_day: bool | None = None
+
+
 @router.get(
     "/events",
     summary="List Calendar Events",
-    description="Retrieves normalized calendar events for the user within a time window.",
+    description="Retrieves normalized calendar events and scheduled tasks for the user within a time window.",
 )
 async def list_calendar_events(
     start_time: datetime | None = Query(
         default=None, description="Start timestamp (default: start of today)"
     ),
     end_time: datetime | None = Query(default=None, description="End timestamp (default: +7 days)"),
+    include_tasks: bool = Query(default=True, description="Whether to include scheduled tasks"),
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -175,8 +202,12 @@ async def list_calendar_events(
     res = await db.execute(stmt)
     events = list(res.scalars().all())
 
-    return [
-        {
+    # Map existing external_ids in CalendarEvent to avoid duplicate task items
+    ext_id_to_event_idx: dict[str, int] = {}
+    formatted_items: list[dict[str, Any]] = []
+
+    for idx, e in enumerate(events):
+        item = {
             "id": str(e.id),
             "external_id": e.external_id,
             "title": e.title,
@@ -187,9 +218,217 @@ async def list_calendar_events(
             "is_fixed": e.is_fixed,
             "source": e.source,
             "location": e.location,
+            "task_id": None,
+            "priority": None,
+            "task_status": None,
         }
-        for e in events
-    ]
+        if e.external_id:
+            ext_id_to_event_idx[e.external_id] = idx
+        formatted_items.append(item)
+
+    if include_tasks:
+        task_stmt = (
+            select(Task)
+            .where(
+                Task.user_id == current_user.id,
+                Task.is_archived.is_(False),
+                Task.scheduled_start.isnot(None),
+                Task.scheduled_end.isnot(None),
+                Task.scheduled_start < end_dt,
+                Task.scheduled_end > start_dt,
+            )
+            .order_by(Task.scheduled_start.asc())
+        )
+        task_res = await db.execute(task_stmt)
+        tasks = list(task_res.scalars().all())
+
+        for t in tasks:
+            if t.google_calendar_event_id and t.google_calendar_event_id in ext_id_to_event_idx:
+                # Event already present from Google Calendar sync; enrich with task metadata
+                ev_idx = ext_id_to_event_idx[t.google_calendar_event_id]
+                formatted_items[ev_idx]["task_id"] = str(t.id)
+                formatted_items[ev_idx]["priority"] = t.priority
+                formatted_items[ev_idx]["task_status"] = t.status
+            else:
+                # Add scheduled task as a calendar item
+                formatted_items.append(
+                    {
+                        "id": f"task_{t.id}",
+                        "external_id": t.google_calendar_event_id,
+                        "title": t.title,
+                        "description": t.description,
+                        "start_time": t.scheduled_start.isoformat(),  # type: ignore
+                        "end_time": t.scheduled_end.isoformat(),      # type: ignore
+                        "is_all_day": False,
+                        "is_fixed": False,
+                        "source": "task",
+                        "location": None,
+                        "task_id": str(t.id),
+                        "priority": t.priority,
+                        "task_status": t.status,
+                        "calendar_sync_status": t.calendar_sync_status,
+                    }
+                )
+
+    # Sort final combined list by start_time
+    formatted_items.sort(key=lambda x: x["start_time"])
+    return formatted_items
+
+
+@router.post(
+    "/events",
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Calendar Event",
+    description="Creates a new calendar event locally and on Google Calendar if connected.",
+)
+async def create_calendar_event(
+    payload: CreateEventRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Create a new calendar event."""
+    if payload.end_time <= payload.start_time:
+        raise AppException(
+            detail="end_time must be strictly after start_time",
+            status_code=400,
+            error_code="INVALID_TIME_RANGE",
+        )
+
+    create_data = CalendarEventCreate(
+        title=payload.title,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        description=payload.description,
+        location=payload.location,
+        is_all_day=payload.is_all_day,
+    )
+    event, pushed = await CalendarService.create_calendar_event(
+        user_id=current_user.id,
+        event_data=create_data,
+        db=db,
+    )
+    return {
+        "id": str(event.id),
+        "external_id": event.external_id,
+        "title": event.title,
+        "description": event.description,
+        "start_time": event.start_time.isoformat(),
+        "end_time": event.end_time.isoformat(),
+        "is_all_day": event.is_all_day,
+        "is_fixed": event.is_fixed,
+        "source": event.source,
+        "location": event.location,
+        "pushed_to_remote": pushed,
+    }
+
+
+@router.patch(
+    "/events/{event_id}",
+    summary="Update Calendar Event",
+    description="Updates title, time, or notes for a calendar event locally and on Google Calendar.",
+)
+async def update_calendar_event(
+    event_id: uuid.UUID,
+    payload: UpdateEventRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Update calendar event fields."""
+    if payload.start_time and payload.end_time and payload.end_time <= payload.start_time:
+        raise AppException(
+            detail="end_time must be strictly after start_time",
+            status_code=400,
+            error_code="INVALID_TIME_RANGE",
+        )
+
+    update_data = CalendarEventUpdate(
+        title=payload.title,
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        description=payload.description,
+        location=payload.location,
+        is_all_day=payload.is_all_day,
+    )
+    updated = await CalendarService.update_calendar_event(
+        user_id=current_user.id,
+        event_id=event_id,
+        event_data=update_data,
+        db=db,
+    )
+    return {
+        "id": str(updated.id),
+        "external_id": updated.external_id,
+        "title": updated.title,
+        "description": updated.description,
+        "start_time": updated.start_time.isoformat(),
+        "end_time": updated.end_time.isoformat(),
+        "is_all_day": updated.is_all_day,
+        "is_fixed": updated.is_fixed,
+        "source": updated.source,
+        "location": updated.location,
+    }
+
+
+@router.delete(
+    "/events/{event_id}",
+    summary="Delete Calendar Event",
+    description="Deletes a calendar event locally and from Google Calendar.",
+)
+async def delete_calendar_event(
+    event_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Delete a calendar event."""
+    success = await CalendarService.delete_calendar_event(
+        user_id=current_user.id,
+        event_id=event_id,
+        db=db,
+    )
+    return {"deleted": success, "id": str(event_id)}
+
+
+@router.post(
+    "/sync/tasks",
+    summary="Synchronize Tasks with Google Calendar",
+    description="Triggers synchronization and retries any failed or pending task calendar appointments.",
+)
+async def sync_tasks_to_calendar(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Sync unsynced/pending scheduled tasks to Google Calendar."""
+    return await CalendarSyncService.sync_pending_tasks(db=db, user_id=current_user.id)
+
+
+@router.get(
+    "/sync/tasks",
+    summary="Get Task Calendar Sync Status",
+    description="Returns aggregate counts of synced, pending, failed, and unsynced scheduled tasks.",
+)
+async def get_task_sync_status(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Retrieve task sync metrics for current user."""
+    stmt = (
+        select(Task.calendar_sync_status, func.count(Task.id))
+        .where(
+            Task.user_id == current_user.id,
+            Task.is_archived.is_(False),
+            Task.scheduled_start.isnot(None),
+        )
+        .group_by(Task.calendar_sync_status)
+    )
+    res = await db.execute(stmt)
+    counts = dict(res.all())
+    return {
+        "synced": counts.get("synced", 0),
+        "pending": counts.get("pending", 0),
+        "failed": counts.get("failed", 0),
+        "unsynced": counts.get("unsynced", 0),
+        "total_scheduled": sum(counts.values()),
+    }
 
 
 @router.post(

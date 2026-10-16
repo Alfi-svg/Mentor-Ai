@@ -23,6 +23,7 @@ from app.services.gmail.models import (
     GmailEmailSummaryResult,
     GmailMessageDetail,
     GmailMessageSummary,
+    GmailModifyRequest,
     GmailSendPayload,
     GmailStatusResponse,
 )
@@ -150,19 +151,23 @@ async def disconnect_gmail(
     "/messages",
     response_model=list[GmailMessageSummary],
     summary="List Gmail Messages",
-    description="Retrieves a paginated list of recent messages, optionally filtered by search query.",
+    description="Retrieves a paginated list of recent messages, optionally filtered by search query or folder.",
 )
 async def list_messages(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     query: str | None = Query(default=None, description="Optional Gmail search query (e.g. is:unread, subject:hw)"),
-    limit: int = Query(default=10, ge=1, le=25, description="Max messages to return"),
+    folder: str | None = Query(default=None, description="Optional folder/label filter (INBOX, STARRED, SENT, DRAFT)"),
+    page_token: str | None = Query(default=None, description="Pagination token for next page of messages"),
+    limit: int = Query(default=15, ge=1, le=50, description="Max messages to return"),
 ) -> list[GmailMessageSummary]:
     """Fetch paginated message summaries."""
     return await GmailService.list_messages(
         user_id=current_user.id,
         db=db,
         query=query,
+        folder=folder,
+        page_token=page_token,
         limit=limit,
     )
 
@@ -184,6 +189,33 @@ async def get_message_detail(
         message_id=message_id,
         db=db,
     )
+
+
+@router.post(
+    "/messages/{message_id}/modify",
+    summary="Modify Message Labels",
+    description="Adds or removes label IDs from a Gmail message (e.g. mark read/unread, star/unstar).",
+)
+async def modify_message(
+    message_id: str,
+    payload: GmailModifyRequest,
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """Modify message labels in Gmail."""
+    labels = await GmailService.modify_message(
+        user_id=current_user.id,
+        message_id=message_id,
+        add_labels=payload.add_label_ids,
+        remove_labels=payload.remove_label_ids,
+        db=db,
+    )
+    return {
+        "id": message_id,
+        "labels": labels,
+        "is_unread": "UNREAD" in labels,
+        "is_starred": "STARRED" in labels,
+    }
 
 
 @router.get(

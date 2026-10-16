@@ -20,6 +20,7 @@ from app.schemas.task import (
     TaskStatus,
     TaskUpdateRequest,
 )
+from app.services.calendar_sync_service import CalendarSyncService
 from app.services.notification_service import NotificationService
 
 logger = get_logger("mentor_ai.task_service")
@@ -66,6 +67,9 @@ class TaskService:
             priority=payload.priority,
             duration_minutes=payload.duration_minutes,
             deadline=payload.deadline,
+            scheduled_start=payload.scheduled_start,
+            scheduled_end=payload.scheduled_end,
+            calendar_sync_status="pending" if payload.scheduled_start and payload.scheduled_end else "unsynced",
             energy_level=payload.energy_level,
             tags=payload.tags,
             constraints=payload.constraints,
@@ -94,6 +98,9 @@ class TaskService:
         db.add(audit_entry)
         await db.commit()
         await db.refresh(task)
+
+        if task.scheduled_start and task.scheduled_end:
+            await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
 
         if task.deadline:
             await NotificationService.reconcile_task_lifecycle(
@@ -277,6 +284,9 @@ class TaskService:
                 db=db, user_id=user_id, task=task, event="task_deadline_changed"
             )
 
+        if bool({"scheduled_start", "scheduled_end", "title", "description", "duration_minutes", "status", "is_archived"} & set(updates.keys())):
+            await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
+
         logger.info(
             "Task updated", task_id=str(task.id), user_id=str(user_id), fields=list(updates.keys())
         )
@@ -352,6 +362,7 @@ class TaskService:
         await NotificationService.reconcile_task_lifecycle(
             db=db, user_id=user_id, task=task, event="task_completed"
         )
+        await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
 
         logger.info("Task marked completed", task_id=str(task.id), user_id=str(user_id))
         return task
@@ -399,6 +410,7 @@ class TaskService:
         await NotificationService.reconcile_task_lifecycle(
             db=db, user_id=user_id, task=task, event="task_reopened"
         )
+        await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
 
         logger.info(
             "Task reopened", task_id=str(task.id), user_id=str(user_id), from_status=previous_status
@@ -438,6 +450,7 @@ class TaskService:
         await NotificationService.reconcile_task_lifecycle(
             db=db, user_id=user_id, task=task, event=event_name
         )
+        await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
 
         logger.info(action_name, task_id=str(task.id), user_id=str(user_id))
         return task

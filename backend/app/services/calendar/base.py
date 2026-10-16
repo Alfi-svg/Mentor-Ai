@@ -6,6 +6,7 @@ from datetime import datetime
 from app.core.errors import AppException
 from app.services.calendar.models import (
     CalendarEventCreate,
+    CalendarEventUpdate,
     NormalizedCalendarEvent,
     OAuthTokenData,
 )
@@ -100,6 +101,13 @@ class CalendarProvider(ABC):
         self, access_token: str, event_data: CalendarEventCreate
     ) -> NormalizedCalendarEvent:
         """Create an event on the external calendar."""
+        ...
+
+    @abstractmethod
+    async def update_event(
+        self, access_token: str, external_id: str, event_data: CalendarEventUpdate
+    ) -> NormalizedCalendarEvent:
+        """Update an existing event on the external calendar."""
         ...
 
     @abstractmethod

@@ -46,6 +46,18 @@ class CalendarEventCreate(BaseModel):
     is_all_day: bool = False
 
 
+class CalendarEventUpdate(BaseModel):
+    """Payload to update an existing event on an external calendar provider."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    description: str | None = None
+    location: str | None = None
+    is_all_day: bool | None = None
+    status: str | None = None
+
+
 class CalendarStatusResponse(BaseModel):
     """Status of user's external calendar connection."""
 

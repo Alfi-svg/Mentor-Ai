@@ -86,6 +86,14 @@ class TaskCreateRequest(BaseModel):
         default_factory=dict,
         description="Custom or availability constraints (e.g. earliest_start, latest_end)",
     )
+    scheduled_start: datetime | None = Field(
+        default=None,
+        description="Designated calendar execution start time",
+    )
+    scheduled_end: datetime | None = Field(
+        default=None,
+        description="Designated calendar execution end time",
+    )
     status: TaskStatus = Field(
         default="pending",
         description="Initial status",
@@ -117,7 +125,7 @@ class TaskCreateRequest(BaseModel):
                 if el_lower in ("high", "medium", "low"):
                     data["energy_level"] = el_lower
                 else:
-                    data["energy_level"] = "medium"
+                    data["energy_level"] = el
 
             # 4. Handle priority normalization
             p = data.get("priority")
@@ -134,7 +142,8 @@ class TaskCreateRequest(BaseModel):
                 elif p_upper in ("LOW",):
                     data["priority"] = "P3"
                 else:
-                    data["priority"] = "P3"
+                    # Keep original value so Pydantic raises validation error for invalid priorities like 'P5'
+                    data["priority"] = p
         return data
 
     @field_validator("title", mode="after")
@@ -145,7 +154,7 @@ class TaskCreateRequest(BaseModel):
             raise ValueError("Task title cannot be empty or whitespace only")
         return trimmed
 
-    @field_validator("deadline", mode="after")
+    @field_validator("deadline", "scheduled_start", "scheduled_end", mode="after")
     @classmethod
     def normalize_deadline(cls, v: datetime | None) -> datetime | None:
         if v is None:
@@ -207,6 +216,30 @@ class TaskUpdateRequest(BaseModel):
         default=None,
         description="Updated scheduling availability constraints",
     )
+    scheduled_start: datetime | None = Field(
+        default=None,
+        description="Updated designated calendar start time",
+    )
+    scheduled_end: datetime | None = Field(
+        default=None,
+        description="Updated designated calendar end time",
+    )
+    google_calendar_event_id: str | None = Field(
+        default=None,
+        description="Linked Google Calendar event ID",
+    )
+    calendar_sync_status: str | None = Field(
+        default=None,
+        description="Calendar sync status (unsynced, synced, pending, failed)",
+    )
+    calendar_sync_error: str | None = Field(
+        default=None,
+        description="Last calendar sync error message if any",
+    )
+    last_synced_at: datetime | None = Field(
+        default=None,
+        description="Timestamp of last successful calendar sync",
+    )
     status: TaskStatus | None = Field(
         default=None,
         description="Updated task lifecycle status",
@@ -226,7 +259,7 @@ class TaskUpdateRequest(BaseModel):
             raise ValueError("Task title cannot be empty or whitespace only")
         return trimmed
 
-    @field_validator("deadline", mode="after")
+    @field_validator("deadline", "scheduled_start", "scheduled_end", "last_synced_at", mode="after")
     @classmethod
     def normalize_deadline(cls, v: datetime | None) -> datetime | None:
         if v is None:
@@ -259,6 +292,12 @@ class TaskResponse(BaseModel):
     priority: str
     duration_minutes: int
     deadline: datetime | None = None
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    google_calendar_event_id: str | None = None
+    calendar_sync_status: str = "unsynced"
+    calendar_sync_error: str | None = None
+    last_synced_at: datetime | None = None
     energy_level: str
     tags: list[str] = Field(default_factory=list)
     constraints: dict[str, Any] = Field(default_factory=dict)
@@ -268,7 +307,15 @@ class TaskResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    @field_validator("deadline", "created_at", "updated_at", mode="after")
+    @field_validator(
+        "deadline",
+        "scheduled_start",
+        "scheduled_end",
+        "last_synced_at",
+        "created_at",
+        "updated_at",
+        mode="after",
+    )
     @classmethod
     def ensure_utc(cls, v: datetime | None) -> datetime | None:
         if v is None:

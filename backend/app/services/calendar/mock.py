@@ -12,9 +12,18 @@ from app.services.calendar.base import (
 )
 from app.services.calendar.models import (
     CalendarEventCreate,
+    CalendarEventUpdate,
     NormalizedCalendarEvent,
     OAuthTokenData,
 )
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 class MockCalendarAdapter(CalendarProvider):
@@ -105,8 +114,8 @@ class MockCalendarAdapter(CalendarProvider):
             external_id=ext_id,
             title=event_data.title,
             description=event_data.description,
-            start_time=event_data.start_time.astimezone(UTC),
-            end_time=event_data.end_time.astimezone(UTC),
+            start_time=_ensure_utc(event_data.start_time),
+            end_time=_ensure_utc(event_data.end_time),
             is_all_day=event_data.is_all_day,
             location=event_data.location,
             status="confirmed",
@@ -122,6 +131,60 @@ class MockCalendarAdapter(CalendarProvider):
             )
 
         return verified
+
+    async def update_event(
+        self, access_token: str, external_id: str, event_data: CalendarEventUpdate
+    ) -> NormalizedCalendarEvent:
+        if self.simulate_rate_limit:
+            raise CalendarRateLimitException()
+        if self.simulate_token_expired:
+            raise CalendarAuthExpiredException()
+
+        existing = self._events.get(external_id)
+        if not existing:
+            raise CalendarProviderException(
+                f"Event {external_id} not found in mock calendar store", status_code=404
+            )
+
+        title = event_data.title if event_data.title is not None else existing.title
+        description = (
+            event_data.description if event_data.description is not None else existing.description
+        )
+        location = event_data.location if event_data.location is not None else existing.location
+        status = event_data.status if event_data.status is not None else existing.status
+        is_all_day = (
+            event_data.is_all_day if event_data.is_all_day is not None else existing.is_all_day
+        )
+        start_time = (
+            _ensure_utc(event_data.start_time)
+            if event_data.start_time is not None
+            else existing.start_time
+        )
+        end_time = (
+            _ensure_utc(event_data.end_time)
+            if event_data.end_time is not None
+            else existing.end_time
+        )
+
+        updated = NormalizedCalendarEvent(
+            external_id=external_id,
+            title=title,
+            description=description,
+            start_time=start_time,
+            end_time=end_time,
+            is_all_day=is_all_day,
+            location=location,
+            status=status,
+            html_link=existing.html_link,
+        )
+        self._events[external_id] = updated
+
+        if self.simulate_read_verification_failure:
+            raise CalendarProviderException(
+                f"Post-condition verification failed: event {external_id} could not be read back."
+            )
+
+        return updated
 
     async def delete_event(self, access_token: str, external_id: str) -> bool:
         if external_id in self._events:

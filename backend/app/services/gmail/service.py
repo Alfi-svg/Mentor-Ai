@@ -265,13 +265,21 @@ class GmailService:
         user_id: uuid.UUID,
         db: AsyncSession,
         query: str | None = None,
-        limit: int = 10,
+        folder: str | None = None,
+        page_token: str | None = None,
+        limit: int = 15,
     ) -> list[GmailMessageSummary]:
         """Fetch recent or searched messages for authenticated user."""
         token = await cls._get_valid_access_token(user_id=user_id, db=db)
         provider = cls.get_provider()
-        safe_limit = max(1, min(limit, 25))
-        return await provider.list_messages(access_token=token, max_results=safe_limit, query=query)
+        safe_limit = max(1, min(limit, 50))
+        return await provider.list_messages(
+            access_token=token,
+            max_results=safe_limit,
+            query=query,
+            folder=folder,
+            page_token=page_token,
+        )
 
     @classmethod
     async def get_message(
@@ -284,6 +292,25 @@ class GmailService:
         token = await cls._get_valid_access_token(user_id=user_id, db=db)
         provider = cls.get_provider()
         return await provider.get_message_detail(access_token=token, message_id=message_id)
+
+    @classmethod
+    async def modify_message(
+        cls,
+        user_id: uuid.UUID,
+        message_id: str,
+        add_labels: list[str] | None,
+        remove_labels: list[str] | None,
+        db: AsyncSession,
+    ) -> list[str]:
+        """Add or remove label IDs on a message (e.g. UNREAD, STARRED)."""
+        token = await cls._get_valid_access_token(user_id=user_id, db=db)
+        provider = cls.get_provider()
+        return await provider.modify_message(
+            access_token=token,
+            message_id=message_id,
+            add_label_ids=add_labels,
+            remove_label_ids=remove_labels,
+        )
 
     # -------------------------------------------------------------------------
     # 3. AI Summarization & LifeOps Task Extraction

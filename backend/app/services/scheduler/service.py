@@ -17,6 +17,7 @@ from app.db.models.connection import ExternalConnection
 from app.db.models.profile import Profile, UserPreferences
 from app.db.models.schedule import Schedule, ScheduleBlock
 from app.db.models.task import Task
+from app.services.calendar_sync_service import CalendarSyncService
 from app.services.scheduler.engine import DeterministicSchedulerEngine
 from app.services.scheduler.models import (
     FixedEvent,
@@ -272,7 +273,8 @@ class SchedulerService:
         )
         db.add(new_schedule)
 
-        # 3. Create discrete ScheduleBlock entities
+        # 3. Create discrete ScheduleBlock entities and update task designated slots
+        scheduled_tasks: list[Task] = []
         for block_prop in proposal.blocks:
             sb = ScheduleBlock(
                 id=block_prop.id,
@@ -287,6 +289,18 @@ class SchedulerService:
                 is_completed=False,
             )
             db.add(sb)
+
+            if block_prop.task_id and block_prop.block_type == "task":
+                task_stmt = select(Task).where(
+                    Task.id == block_prop.task_id, Task.user_id == user_id
+                )
+                task_res = await db.execute(task_stmt)
+                task = task_res.scalar_one_or_none()
+                if task:
+                    task.scheduled_start = block_prop.start_time
+                    task.scheduled_end = block_prop.end_time
+                    task.calendar_sync_status = "pending"
+                    scheduled_tasks.append(task)
 
         # 4. Atomic Audit Log
         audit = AuditLog(
@@ -307,6 +321,17 @@ class SchedulerService:
 
         await db.commit()
         await db.refresh(new_schedule)
+
+        # 5. Automatically sync approved task appointments to external Google Calendar
+        for st in scheduled_tasks:
+            try:
+                await CalendarSyncService.sync_task_to_calendar(db=db, task=st, user_id=user_id)
+            except Exception as sync_exc:
+                logger.warning(
+                    "Automatic calendar sync for task failed after schedule approval",
+                    task_id=str(st.id),
+                    error=str(sync_exc),
+                )
 
         logger.info(
             "Schedule approved and persisted",
