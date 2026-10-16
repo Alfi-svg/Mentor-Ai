@@ -53,6 +53,8 @@ export default function TasksPage() {
   const [createPriority, setCreatePriority] = useState<TaskPriority>("P3");
   const [createEnergy, setCreateEnergy] = useState<"high" | "medium" | "low">("medium");
   const [createDeadline, setCreateDeadline] = useState("");
+  const [createScheduledStart, setCreateScheduledStart] = useState("");
+  const [createScheduledEnd, setCreateScheduledEnd] = useState("");
   const [createTags, setCreateTags] = useState("");
   const [createDependsOn, setCreateDependsOn] = useState<string>("");
   const [createLoading, setCreateLoading] = useState(false);
@@ -66,6 +68,8 @@ export default function TasksPage() {
   const [editEnergy, setEditEnergy] = useState<"high" | "medium" | "low">("medium");
   const [editStatus, setEditStatus] = useState<TaskStatus>("pending");
   const [editDeadline, setEditDeadline] = useState("");
+  const [editScheduledStart, setEditScheduledStart] = useState("");
+  const [editScheduledEnd, setEditScheduledEnd] = useState("");
   const [editTags, setEditTags] = useState("");
   const [editDependsOn, setEditDependsOn] = useState<string>("");
   const [editLoading, setEditLoading] = useState(false);
@@ -170,6 +174,8 @@ export default function TasksPage() {
         priority: createPriority,
         energy_level: createEnergy,
         deadline: createDeadline ? new Date(createDeadline).toISOString() : null,
+        scheduled_start: createScheduledStart ? new Date(createScheduledStart).toISOString() : null,
+        scheduled_end: createScheduledEnd ? new Date(createScheduledEnd).toISOString() : null,
         tags: parsedTags,
         constraints,
       };
@@ -185,6 +191,8 @@ export default function TasksPage() {
       setCreatePriority("P3");
       setCreateEnergy("medium");
       setCreateDeadline("");
+      setCreateScheduledStart("");
+      setCreateScheduledEnd("");
       setCreateTags("");
       setCreateDependsOn("");
     } catch (err) {
@@ -207,6 +215,8 @@ export default function TasksPage() {
     setEditEnergy(task.energy_level || "medium");
     setEditStatus(task.status);
     setEditDeadline(task.deadline ? task.deadline.slice(0, 16) : "");
+    setEditScheduledStart(task.scheduled_start ? task.scheduled_start.slice(0, 16) : "");
+    setEditScheduledEnd(task.scheduled_end ? task.scheduled_end.slice(0, 16) : "");
     setEditTags((task.tags || []).join(", "));
     const rawDeps = task.constraints?.depends_on;
     setEditDependsOn(Array.isArray(rawDeps) && rawDeps.length > 0 ? String(rawDeps[0]) : "");
@@ -240,6 +250,8 @@ export default function TasksPage() {
         energy_level: editEnergy,
         status: editStatus,
         deadline: editDeadline ? new Date(editDeadline).toISOString() : null,
+        scheduled_start: editScheduledStart ? new Date(editScheduledStart).toISOString() : null,
+        scheduled_end: editScheduledEnd ? new Date(editScheduledEnd).toISOString() : null,
         tags: parsedTags,
         constraints: updatedConstraints,
       };
@@ -472,6 +484,32 @@ export default function TasksPage() {
                           </span>
                         )}
 
+                        {task.scheduled_start && (
+                          <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                            <Clock className="h-3 w-3 text-emerald-400" />
+                            Scheduled: {new Date(task.scheduled_start).toLocaleString([], { dateStyle: "short", timeStyle: "short" })}
+                          </span>
+                        )}
+
+                        {task.calendar_sync_status && (
+                          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono border ${
+                            task.calendar_sync_status === "synced"
+                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                              : task.calendar_sync_status === "pending"
+                              ? "bg-sky-500/10 text-sky-400 border-sky-500/20"
+                              : task.calendar_sync_status === "failed"
+                              ? "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                              : "bg-zinc-800 text-zinc-400 border-zinc-700"
+                          }`}>
+                            <span className={`h-1.5 w-1.5 rounded-full ${
+                              task.calendar_sync_status === "synced" ? "bg-emerald-400" :
+                              task.calendar_sync_status === "pending" ? "bg-sky-400 animate-pulse" :
+                              task.calendar_sync_status === "failed" ? "bg-rose-400" : "bg-zinc-500"
+                            }`} />
+                            {task.calendar_sync_status}
+                          </span>
+                        )}
+
                         {task.energy_level && (
                           <span className="flex items-center gap-1 text-zinc-400">
                             <Zap className="h-3 w-3 text-amber-400" />
@@ -695,6 +733,28 @@ export default function TasksPage() {
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">Optional Scheduled Start</label>
+                    <input
+                      type="datetime-local"
+                      value={createScheduledStart}
+                      onChange={(e) => setCreateScheduledStart(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">Optional Scheduled End</label>
+                    <input
+                      type="datetime-local"
+                      value={createScheduledEnd}
+                      onChange={(e) => setCreateScheduledEnd(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
                 {/* Prerequisite Task Selection */}
                 {tasks.length > 0 && (
                   <div className="space-y-1">
@@ -852,6 +912,28 @@ export default function TasksPage() {
                       value={editTags}
                       onChange={(e) => setEditTags(e.target.value)}
                       placeholder="e.g., cs301, lab"
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">Scheduled Start</label>
+                    <input
+                      type="datetime-local"
+                      value={editScheduledStart}
+                      onChange={(e) => setEditScheduledStart(e.target.value)}
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-xs font-semibold text-zinc-300">Scheduled End</label>
+                    <input
+                      type="datetime-local"
+                      value={editScheduledEnd}
+                      onChange={(e) => setEditScheduledEnd(e.target.value)}
                       className="w-full rounded-lg border border-zinc-700 bg-zinc-800 p-2 text-xs text-white focus:border-brand-500 focus:outline-none"
                     />
                   </div>

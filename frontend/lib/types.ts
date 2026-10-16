@@ -430,6 +430,10 @@ export interface NotificationItem {
   deduplication_key?: string | null;
   payload?: Record<string, unknown> | null;
   created_at: string;
+  target_date?: string | null;
+  target_time?: string | null;
+  timezone?: string | null;
+  trigger_datetime?: string | null;
 }
 
 // -----------------------------------------------------------------------------

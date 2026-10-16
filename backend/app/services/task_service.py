@@ -101,8 +101,64 @@ class TaskService:
 
         if task.scheduled_start and task.scheduled_end:
             await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
+            await NotificationService.reconcile_task_lifecycle(
+                db=db, user_id=user_id, task=task, event="task_schedule_changed"
+            )
+        elif task.deadline:
+            # Deterministic auto-scheduling for deadline tasks:
+            # Attempt to allocate a conflict-free working slot on the deadline date before the deadline
+            try:
+                import zoneinfo
+                from app.db.models.profile import Profile
+                from app.services.scheduler.service import SchedulerService
 
-        if task.deadline:
+                profile = await db.scalar(select(Profile).where(Profile.id == user_id))
+                user_tz_str = profile.timezone if profile and profile.timezone else "Asia/Dhaka"
+                try:
+                    user_tz = zoneinfo.ZoneInfo(user_tz_str)
+                except Exception:
+                    user_tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+
+                dl_loc = (
+                    task.deadline.astimezone(user_tz)
+                    if task.deadline.tzinfo
+                    else task.deadline.replace(tzinfo=UTC).astimezone(user_tz)
+                )
+                target_date = dl_loc.date()
+
+                proposal = await SchedulerService.generate_proposal(
+                    db=db,
+                    user_id=user_id,
+                    target_date=target_date,
+                    task_ids=[task.id],
+                    enforce_buffer=True,
+                )
+
+                matching_block = next(
+                    (b for b in proposal.blocks if b.task_id == task.id and b.block_type == "task"),
+                    None,
+                )
+                dl_utc = task.deadline if task.deadline.tzinfo else task.deadline.replace(tzinfo=UTC)
+                if matching_block and matching_block.end_time <= dl_utc:
+                    task.scheduled_start = matching_block.start_time
+                    task.scheduled_end = matching_block.end_time
+                    task.calendar_sync_status = "pending"
+                    await db.commit()
+                    await db.refresh(task)
+                    await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)
+                    await NotificationService.reconcile_task_lifecycle(
+                        db=db, user_id=user_id, task=task, event="task_schedule_changed"
+                    )
+                else:
+                    task.calendar_sync_status = "unscheduled"
+                    await db.commit()
+                    await db.refresh(task)
+            except Exception as exc:
+                logger.warning("Deterministic auto-scheduling skipped on task create", task_id=str(task.id), error=str(exc))
+                task.calendar_sync_status = "unscheduled"
+                await db.commit()
+                await db.refresh(task)
+
             await NotificationService.reconcile_task_lifecycle(
                 db=db, user_id=user_id, task=task, event="task_deadline_changed"
             )
@@ -279,10 +335,15 @@ class TaskService:
             await NotificationService.reconcile_task_lifecycle(
                 db=db, user_id=user_id, task=task, event=f"task_{updates['status']}"
             )
-        elif "deadline" in updates:
-            await NotificationService.reconcile_task_lifecycle(
-                db=db, user_id=user_id, task=task, event="task_deadline_changed"
-            )
+        else:
+            if "scheduled_start" in updates or "scheduled_end" in updates:
+                await NotificationService.reconcile_task_lifecycle(
+                    db=db, user_id=user_id, task=task, event="task_schedule_changed"
+                )
+            if "deadline" in updates:
+                await NotificationService.reconcile_task_lifecycle(
+                    db=db, user_id=user_id, task=task, event="task_deadline_changed"
+                )
 
         if bool({"scheduled_start", "scheduled_end", "title", "description", "duration_minutes", "status", "is_archived"} & set(updates.keys())):
             await CalendarSyncService.sync_task_to_calendar(db=db, task=task, user_id=user_id)

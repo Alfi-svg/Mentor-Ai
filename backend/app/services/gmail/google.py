@@ -1,5 +1,6 @@
 """Production Google Gmail API v1 provider implementation using httpx."""
 
+import asyncio
 import base64
 import email
 from datetime import UTC, datetime, timedelta
@@ -257,9 +258,7 @@ class GoogleGmailAdapter(GmailProvider):
             if not messages_meta:
                 return []
 
-            summaries: list[GmailMessageSummary] = []
-            for item in messages_meta:
-                mid = item["id"]
+            async def fetch_summary(mid: str) -> GmailMessageSummary | None:
                 try:
                     m_resp = await client.get(
                         f"{GMAIL_API_BASE}/messages/{mid}",
@@ -273,27 +272,31 @@ class GoogleGmailAdapter(GmailProvider):
                         m_data = m_resp.json()
                         headers = {h["name"].lower(): h["value"] for h in m_data.get("payload", {}).get("headers", [])}
                         lbls = m_data.get("labelIds", [])
-                        summaries.append(
-                            GmailMessageSummary(
-                                id=m_data["id"],
-                                thread_id=m_data.get("threadId", m_data["id"]),
-                                sender=sanitize_email_text(headers.get("from", "Unknown")),
-                                recipient=sanitize_email_text(headers.get("to")),
-                                subject=sanitize_email_text(headers.get("subject", "(No Subject)")),
-                                date=headers.get("date"),
-                                snippet=sanitize_email_text(m_data.get("snippet", "")),
-                                is_unread="UNREAD" in lbls,
-                                is_starred="STARRED" in lbls,
-                                has_attachments=any(
-                                    part.get("filename")
-                                    for part in m_data.get("payload", {}).get("parts", [])
-                                ),
-                                labels=lbls,
-                            )
+                        return GmailMessageSummary(
+                            id=m_data["id"],
+                            thread_id=m_data.get("threadId", m_data["id"]),
+                            sender=sanitize_email_text(headers.get("from", "Unknown")),
+                            recipient=sanitize_email_text(headers.get("to")),
+                            subject=sanitize_email_text(headers.get("subject", "(No Subject)")),
+                            date=headers.get("date"),
+                            snippet=sanitize_email_text(m_data.get("snippet", "")),
+                            is_unread="UNREAD" in lbls,
+                            is_starred="STARRED" in lbls,
+                            has_attachments=any(
+                                part.get("filename")
+                                for part in m_data.get("payload", {}).get("parts", [])
+                            ),
+                            labels=lbls,
                         )
                 except Exception as exc:
                     logger.warning("Failed fetching metadata for Gmail message", message_id=mid, error=str(exc))
+                return None
 
+            tasks = [fetch_summary(item["id"]) for item in messages_meta if "id" in item]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            summaries: list[GmailMessageSummary] = [
+                r for r in results if isinstance(r, GmailMessageSummary)
+            ]
             return summaries
         except httpx.TimeoutException as exc:
             raise GmailTimeoutException() from exc

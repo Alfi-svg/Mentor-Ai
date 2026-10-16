@@ -102,14 +102,19 @@ export function NotificationBell() {
     }
   };
 
-  const formatScheduledTime = (timeStr: string) => {
+  const formatScheduledTime = (notif: NotificationItem) => {
     try {
-      return new Date(timeStr).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      if (notif.target_date && notif.target_time) {
+        return `${notif.target_date} ${notif.target_time.slice(0, 5)}`;
+      }
+      const dt = new Date(notif.scheduled_for);
+      const isToday = dt.toDateString() === new Date().toDateString();
+      if (isToday) {
+        return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return dt.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
     } catch {
-      return timeStr;
+      return notif.scheduled_for;
     }
   };
 
@@ -252,7 +257,7 @@ export function NotificationBell() {
                           {notif.title}
                         </p>
                         <span className="text-[10px] text-zinc-400 font-mono shrink-0">
-                          {formatScheduledTime(notif.scheduled_for)}
+                          {formatScheduledTime(notif)}
                         </span>
                       </div>
                       <p className="text-[11px] text-zinc-300 leading-snug line-clamp-2">

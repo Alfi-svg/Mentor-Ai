@@ -147,6 +147,12 @@ class NotificationService:
         return settings_update
 
     @staticmethod
+    async def get_user_timezone_str(db: AsyncSession, user_id: uuid.UUID) -> str:
+        """Fetch user's configured IANA timezone, defaulting to Asia/Dhaka."""
+        profile = await db.scalar(select(Profile).where(Profile.id == user_id))
+        return profile.timezone if profile and profile.timezone else "Asia/Dhaka"
+
+    @staticmethod
     def adjust_for_quiet_hours(
         scheduled_for: datetime,
         timezone_str: str,
@@ -159,7 +165,7 @@ class NotificationService:
         try:
             tz = zoneinfo.ZoneInfo(timezone_str)
         except Exception:
-            tz = zoneinfo.ZoneInfo("UTC")
+            tz = zoneinfo.ZoneInfo("Asia/Dhaka")
 
         # Convert scheduled_for to user local time
         local_dt = scheduled_for.astimezone(tz)
@@ -183,10 +189,15 @@ class NotificationService:
         if not is_inside:
             return scheduled_for
 
-        # Postpone to next q_end
+        # Postpone to next q_end on the appropriate day
         next_wake_date = local_dt.date()
-        if local_time >= q_start and q_start > q_end:
-            next_wake_date += timedelta(days=1)
+        if q_start > q_end:
+            # Over-midnight quiet hours: if in evening portion, wake tomorrow; if early morning, wake today
+            if local_time >= q_start:
+                next_wake_date += timedelta(days=1)
+        else:
+            # Non-overnight quiet hours: wake today
+            pass
 
         wake_dt_local = datetime.combine(next_wake_date, q_end, tzinfo=tz)
         return wake_dt_local.astimezone(UTC)
@@ -207,6 +218,8 @@ class NotificationService:
         action_id: uuid.UUID | None = None,
         deduplication_key: str | None = None,
         payload: dict[str, Any] | None = None,
+        target_datetime: datetime | None = None,
+        timezone_str: str | None = None,
     ) -> Notification | None:
         """Schedule a persistent notification idempotently with user preference checks."""
         # 1. Check user preferences for notification category
@@ -235,17 +248,44 @@ class NotificationService:
             if existing:
                 return existing
 
-        # 3. Quiet hours adjustment (unless urgent overdue or action required)
+        # 3. Resolve user timezone and enrich payload with date-aware fields
+        user_tz_name = timezone_str
+        if not user_tz_name:
+            user_tz_name = await NotificationService.get_user_timezone_str(db, user_id)
+
+        try:
+            user_tz = zoneinfo.ZoneInfo(user_tz_name)
+        except Exception:
+            user_tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+            user_tz_name = "Asia/Dhaka"
+
+        enriched_payload = dict(payload or {})
+        enriched_payload.setdefault("timezone", user_tz_name)
+
+        if target_datetime:
+            tgt_utc = target_datetime if target_datetime.tzinfo else target_datetime.replace(tzinfo=UTC)
+            tgt_utc = tgt_utc.astimezone(UTC)
+            tgt_loc = tgt_utc.astimezone(user_tz)
+            enriched_payload.setdefault("target_date", tgt_loc.strftime("%Y-%m-%d"))
+            enriched_payload.setdefault("target_time", tgt_loc.strftime("%H:%M:%S"))
+            enriched_payload.setdefault("target_datetime", tgt_utc.isoformat())
+
+        # 4. Quiet hours adjustment (unless urgent overdue or action required)
         if notification_type not in ("overdue", "action_required"):
-            profile = await db.scalar(select(Profile).where(Profile.id == user_id))
-            user_tz = profile.timezone if profile and profile.timezone else "UTC"
             scheduled_for = NotificationService.adjust_for_quiet_hours(
-                scheduled_for, user_tz, user_settings
+                scheduled_for, user_tz_name, user_settings
             )
 
-        # 4. Ensure UTC representation
+        # 5. Ensure UTC representation
         sched_utc = scheduled_for if scheduled_for.tzinfo else scheduled_for.replace(tzinfo=UTC)
         sched_utc = sched_utc.astimezone(UTC)
+        sched_loc = sched_utc.astimezone(user_tz)
+
+        if "target_date" not in enriched_payload:
+            enriched_payload["target_date"] = sched_loc.strftime("%Y-%m-%d")
+        if "target_time" not in enriched_payload:
+            enriched_payload["target_time"] = sched_loc.strftime("%H:%M:%S")
+        enriched_payload.setdefault("trigger_datetime", sched_utc.isoformat())
 
         notif = Notification(
             id=uuid.uuid4(),
@@ -261,7 +301,7 @@ class NotificationService:
             attempt_count=0,
             max_attempts=settings.NOTIFICATION_MAX_RETRY_ATTEMPTS,
             deduplication_key=deduplication_key,
-            payload=payload,
+            payload=enriched_payload,
             is_read=False,
             created_at=datetime.now(UTC),
         )
@@ -327,8 +367,12 @@ class NotificationService:
         await db.execute(claim_update)
         await db.commit()
 
-        # Re-fetch claimed items
-        re_stmt = select(Notification).where(Notification.id.in_(claimed_ids))
+        # Re-fetch claimed items in strict earliest-first chronological order
+        re_stmt = (
+            select(Notification)
+            .where(Notification.id.in_(claimed_ids))
+            .order_by(Notification.scheduled_for.asc())
+        )
         return list((await db.execute(re_stmt)).scalars().all())
 
     @staticmethod
@@ -366,11 +410,49 @@ class NotificationService:
                     cancelled_count += 1
                     continue
 
-            # 2. Quiet hours check at delivery moment
+            # 2. Date-Aware Stale Reminder Expiration:
+            # If this is an upcoming or due-soon reminder whose target event/deadline has already passed,
+            # suppress and cancel it so missed events are never delivered to the user as "upcoming".
+            payload = notif.payload or {}
+            target_dt_iso = payload.get("target_datetime")
+            if notif.notification_type in ("upcoming_task", "due_soon"):
+                target_passed = False
+                if target_dt_iso:
+                    try:
+                        tgt_dt = datetime.fromisoformat(target_dt_iso)
+                        if tgt_dt.tzinfo is None:
+                            tgt_dt = tgt_dt.replace(tzinfo=UTC)
+                        if now > tgt_dt:
+                            target_passed = True
+                    except Exception:
+                        pass
+                elif notif.task_id:
+                    task = await db.scalar(select(Task).where(Task.id == notif.task_id))
+                    if task:
+                        target = task.scheduled_start or task.deadline
+                        if target:
+                            tgt_utc = target if target.tzinfo else target.replace(tzinfo=UTC)
+                            if now > tgt_utc:
+                                target_passed = True
+
+                if target_passed:
+                    notif.status = "cancelled"
+                    notif.lease_expires_at = None
+                    notif.last_error = "Target event/deadline has already passed; suppressed stale upcoming reminder."
+                    cancelled_count += 1
+                    continue
+
+            # 3. Defensive trigger validation: Never deliver if notification is scheduled in the future
+            sched_for = notif.scheduled_for if notif.scheduled_for.tzinfo else notif.scheduled_for.replace(tzinfo=UTC)
+            if sched_for > now:
+                notif.status = "pending"
+                notif.lease_expires_at = None
+                continue
+
+            # 4. Quiet hours check at delivery moment
             user_settings = await NotificationService.get_user_notification_settings(db, notif.user_id)
             if notif.notification_type not in ("overdue", "action_required") and user_settings.quiet_hours_enabled:
-                profile = await db.scalar(select(Profile).where(Profile.id == notif.user_id))
-                user_tz = profile.timezone if profile and profile.timezone else "UTC"
+                user_tz = await NotificationService.get_user_timezone_str(db, notif.user_id)
                 adj = NotificationService.adjust_for_quiet_hours(now, user_tz, user_settings)
                 if adj > now:
                     # Postpone delivery
@@ -495,45 +577,111 @@ class NotificationService:
             await db.commit()
             return
 
-        # Case C: Task Deadline Changed or Reopened -> Reconcile reminders
-        if event in ("task_deadline_changed", "task_reopened"):
-            # 1. Cancel existing pending deadline reminders
+        # Case C: Task Deadline, Schedule, or Status Reopened -> Reconcile reminders
+        if event in ("task_deadline_changed", "task_schedule_changed", "task_reopened"):
+            # 1. Cancel existing pending reminders for the matching event scope
+            types_to_cancel = (
+                ["upcoming_task", "due_soon", "due_now"]
+                if event == "task_reopened"
+                else (["upcoming_task"] if event == "task_schedule_changed" else ["due_soon", "due_now"])
+            )
             cancel_stmt = (
                 update(Notification)
                 .where(
                     Notification.task_id == task.id,
-                    Notification.notification_type.in_(["upcoming_task", "due_soon", "due_now"]),
+                    Notification.notification_type.in_(types_to_cancel),
                     Notification.status.in_(["pending", "failed"]),
                 )
                 .values(
                     status="cancelled",
                     lease_expires_at=None,
-                    last_error="Cancelled due to deadline rescheduling",
+                    last_error=f"Cancelled due to task rescheduling ({event})",
                 )
             )
             await db.execute(cancel_stmt)
 
-            # 2. If new deadline is present and active, schedule new upcoming reminder
-            if task.deadline and task.status not in ("completed", "cancelled") and not task.is_archived:
-                dl = task.deadline if task.deadline.tzinfo else task.deadline.replace(tzinfo=UTC)
-                dl = dl.astimezone(UTC)
-                if dl > now:
-                    user_settings = await NotificationService.get_user_notification_settings(db, user_id)
-                    lead_minutes = user_settings.reminder_lead_time_minutes
-                    remind_at = dl - timedelta(minutes=lead_minutes)
-                    if remind_at < now:
-                        remind_at = now
+            if task.status not in ("completed", "cancelled") and not task.is_archived:
+                user_settings = await NotificationService.get_user_notification_settings(db, user_id)
+                user_tz_str = await NotificationService.get_user_timezone_str(db, user_id)
+                try:
+                    user_tz = zoneinfo.ZoneInfo(user_tz_str)
+                except Exception:
+                    user_tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+                    user_tz_str = "Asia/Dhaka"
 
-                    await NotificationService.schedule_notification(
-                        db=db,
-                        user_id=user_id,
-                        notification_type="due_soon",
-                        title=f"Upcoming Deadline: {task.title}",
-                        message=f"'{task.title}' is due in {lead_minutes} minutes (at {dl.strftime('%I:%M %p')}).",
-                        scheduled_for=remind_at,
-                        task_id=task.id,
-                        deduplication_key=f"due_soon:{task.id}:{int(dl.timestamp())}",
-                    )
+                lead_minutes = user_settings.reminder_lead_time_minutes
+
+                # A. Scheduled Start Reminder (upcoming_task)
+                if event in ("task_schedule_changed", "task_reopened") and task.scheduled_start:
+                    st = task.scheduled_start if task.scheduled_start.tzinfo else task.scheduled_start.replace(tzinfo=UTC)
+                    st_utc = st.astimezone(UTC)
+                    if st_utc > now:
+                        st_loc = st_utc.astimezone(user_tz)
+                        remind_at = st_utc - timedelta(minutes=lead_minutes)
+                        if remind_at < now:
+                            remind_at = now
+
+                        date_fmt = st_loc.strftime("%b %d, %Y")
+                        time_fmt = st_loc.strftime("%I:%M %p")
+                        ts_key = int(st_utc.timestamp())
+
+                        await NotificationService.schedule_notification(
+                            db=db,
+                            user_id=user_id,
+                            notification_type="upcoming_task",
+                            title=f"Upcoming Event: {task.title}",
+                            message=f"'{task.title}' is scheduled to start on {date_fmt} at {time_fmt} ({user_tz_str}).",
+                            scheduled_for=remind_at,
+                            task_id=task.id,
+                            deduplication_key=f"upcoming_task:{task.id}:{ts_key}",
+                            target_datetime=st_utc,
+                            timezone_str=user_tz_str,
+                            payload={
+                                "target_date": st_loc.strftime("%Y-%m-%d"),
+                                "target_time": st_loc.strftime("%H:%M:%S"),
+                                "timezone": user_tz_str,
+                                "target_datetime": st_utc.isoformat(),
+                                "trigger_datetime": remind_at.isoformat(),
+                                "lead_time_minutes": lead_minutes,
+                                "event_type": "scheduled_start",
+                            },
+                        )
+
+                # B. Deadline Reminder (due_soon)
+                if event in ("task_deadline_changed", "task_reopened") and task.deadline:
+                    dl = task.deadline if task.deadline.tzinfo else task.deadline.replace(tzinfo=UTC)
+                    dl_utc = dl.astimezone(UTC)
+                    if dl_utc > now:
+                        dl_loc = dl_utc.astimezone(user_tz)
+                        remind_at = dl_utc - timedelta(minutes=lead_minutes)
+                        if remind_at < now:
+                            remind_at = now
+
+                        date_fmt = dl_loc.strftime("%b %d, %Y")
+                        time_fmt = dl_loc.strftime("%I:%M %p")
+                        ts_key = int(dl_utc.timestamp())
+
+                        await NotificationService.schedule_notification(
+                            db=db,
+                            user_id=user_id,
+                            notification_type="due_soon",
+                            title=f"Upcoming Deadline: {task.title}",
+                            message=f"'{task.title}' is due on {date_fmt} at {time_fmt} ({user_tz_str}).",
+                            scheduled_for=remind_at,
+                            task_id=task.id,
+                            deduplication_key=f"due_soon:{task.id}:{ts_key}",
+                            target_datetime=dl_utc,
+                            timezone_str=user_tz_str,
+                            payload={
+                                "target_date": dl_loc.strftime("%Y-%m-%d"),
+                                "target_time": dl_loc.strftime("%H:%M:%S"),
+                                "timezone": user_tz_str,
+                                "target_datetime": dl_utc.isoformat(),
+                                "trigger_datetime": remind_at.isoformat(),
+                                "lead_time_minutes": lead_minutes,
+                                "event_type": "deadline",
+                            },
+                        )
             await db.commit()
 
     # -------------------------------------------------------------------------
@@ -598,7 +746,7 @@ class NotificationService:
     async def evaluate_user_notifications(
         db: AsyncSession, user_id: uuid.UUID
     ) -> tuple[int, list[Notification]]:
-        """Evaluate deadlines for user tasks and generate due_soon, due_now, and overdue alerts.
+        """Evaluate deadlines and scheduled tasks and generate upcoming_task, due_soon, due_now, and overdue alerts.
 
         Suppresses alerts if the task is already completed or cancelled.
         Guarantees idempotency by checking existing alerts per task.
@@ -610,7 +758,7 @@ class NotificationService:
             .where(
                 Task.user_id == user_id,
                 Task.is_archived.is_(False),
-                Task.deadline.isnot(None),
+                or_(Task.deadline.isnot(None), Task.scheduled_start.isnot(None)),
                 Task.status.not_in(["completed", "cancelled"]),
             )
         )
@@ -618,45 +766,112 @@ class NotificationService:
         new_notifications: list[Notification] = []
 
         user_settings = await NotificationService.get_user_notification_settings(db, user_id)
+        user_tz_str = await NotificationService.get_user_timezone_str(db, user_id)
+        try:
+            user_tz = zoneinfo.ZoneInfo(user_tz_str)
+        except Exception:
+            user_tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+            user_tz_str = "Asia/Dhaka"
 
         for task in tasks:
+            # 1. Scheduled Start evaluation (upcoming_task)
+            if task.scheduled_start and user_settings.notify_upcoming_tasks:
+                st = task.scheduled_start if task.scheduled_start.tzinfo else task.scheduled_start.replace(tzinfo=UTC)
+                st_utc = st.astimezone(UTC)
+                st_loc = st_utc.astimezone(user_tz)
+                st_lead = timedelta(minutes=user_settings.reminder_lead_time_minutes)
+                st_ts = int(st_utc.timestamp())
+
+                # If within lead time and not yet started
+                if (st_utc - st_lead) <= now < st_utc:
+                    upcoming_key = f"upcoming_task:{task.id}:{st_ts}"
+                    date_fmt = st_loc.strftime("%b %d, %Y")
+                    time_fmt = st_loc.strftime("%I:%M %p")
+                    notif = await NotificationService.schedule_notification(
+                        db=db,
+                        user_id=user_id,
+                        notification_type="upcoming_task",
+                        title=f"Upcoming Event: {task.title}",
+                        message=f"'{task.title}' is scheduled to start on {date_fmt} at {time_fmt} ({user_tz_str}).",
+                        scheduled_for=now,
+                        task_id=task.id,
+                        deduplication_key=upcoming_key,
+                        target_datetime=st_utc,
+                        timezone_str=user_tz_str,
+                        payload={
+                            "target_date": st_loc.strftime("%Y-%m-%d"),
+                            "target_time": st_loc.strftime("%H:%M:%S"),
+                            "timezone": user_tz_str,
+                            "target_datetime": st_utc.isoformat(),
+                            "trigger_datetime": now.isoformat(),
+                            "lead_time_minutes": user_settings.reminder_lead_time_minutes,
+                            "event_type": "scheduled_start",
+                        },
+                    )
+                    if notif and notif.status == "pending":
+                        new_notifications.append(notif)
+
+            # 2. Deadline evaluation (overdue, due_now, due_soon)
             if not task.deadline:
                 continue
 
             dl = task.deadline if task.deadline.tzinfo else task.deadline.replace(tzinfo=UTC)
-            dl = dl.astimezone(UTC)
-            dl_ts = int(dl.timestamp())
+            dl_utc = dl.astimezone(UTC)
+            dl_loc = dl_utc.astimezone(user_tz)
+            dl_ts = int(dl_utc.timestamp())
+            date_fmt = dl_loc.strftime("%b %d, %Y")
+            time_fmt = dl_loc.strftime("%I:%M %p")
 
             # Case A: Overdue (now > deadline)
-            if now > dl:
-                # 24-hour date bucket deduplication to prevent spamming
-                overdue_key = f"overdue:{task.id}:{now.strftime('%Y-%m-%d')}"
+            if now > dl_utc and user_settings.notify_overdue:
+                now_loc = now.astimezone(user_tz)
+                overdue_key = f"overdue:{task.id}:{now_loc.strftime('%Y-%m-%d')}"
                 notif = await NotificationService.schedule_notification(
                     db=db,
                     user_id=user_id,
                     notification_type="overdue",
                     title=f"Task Overdue: {task.title}",
-                    message=f"'{task.title}' was due at {dl.strftime('%I:%M %p')}. Please complete or reschedule.",
+                    message=f"'{task.title}' was due on {date_fmt} at {time_fmt} ({user_tz_str}). Please complete or reschedule.",
                     scheduled_for=now,
                     task_id=task.id,
                     deduplication_key=overdue_key,
+                    target_datetime=dl_utc,
+                    timezone_str=user_tz_str,
+                    payload={
+                        "target_date": dl_loc.strftime("%Y-%m-%d"),
+                        "target_time": dl_loc.strftime("%H:%M:%S"),
+                        "timezone": user_tz_str,
+                        "target_datetime": dl_utc.isoformat(),
+                        "trigger_datetime": now.isoformat(),
+                        "event_type": "deadline",
+                    },
                 )
                 if notif and notif.status == "pending":
                     new_notifications.append(notif)
                 continue
 
             # Case B: Due Now (within 10 minutes of deadline)
-            if dl - timedelta(minutes=10) <= now <= dl:
+            if (dl_utc - timedelta(minutes=10)) <= now <= dl_utc and user_settings.notify_deadlines:
                 due_now_key = f"due_now:{task.id}:{dl_ts}"
                 notif = await NotificationService.schedule_notification(
                     db=db,
                     user_id=user_id,
                     notification_type="due_now",
                     title=f"Task Due Now: {task.title}",
-                    message=f"'{task.title}' is due right now at {dl.strftime('%I:%M %p')}.",
+                    message=f"'{task.title}' is due right now on {date_fmt} at {time_fmt} ({user_tz_str}).",
                     scheduled_for=now,
                     task_id=task.id,
                     deduplication_key=due_now_key,
+                    target_datetime=dl_utc,
+                    timezone_str=user_tz_str,
+                    payload={
+                        "target_date": dl_loc.strftime("%Y-%m-%d"),
+                        "target_time": dl_loc.strftime("%H:%M:%S"),
+                        "timezone": user_tz_str,
+                        "target_datetime": dl_utc.isoformat(),
+                        "trigger_datetime": now.isoformat(),
+                        "event_type": "deadline",
+                    },
                 )
                 if notif and notif.status == "pending":
                     new_notifications.append(notif)
@@ -664,17 +879,28 @@ class NotificationService:
 
             # Case C: Due Soon (within lead time of deadline)
             lead_time = timedelta(minutes=user_settings.reminder_lead_time_minutes)
-            if now >= (dl - lead_time) and now < dl:
+            if (dl_utc - lead_time) <= now < dl_utc and user_settings.notify_deadlines:
                 due_soon_key = f"due_soon:{task.id}:{dl_ts}"
                 notif = await NotificationService.schedule_notification(
                     db=db,
                     user_id=user_id,
                     notification_type="due_soon",
                     title=f"Upcoming Deadline: {task.title}",
-                    message=f"'{task.title}' is due in less than {user_settings.reminder_lead_time_minutes} minutes.",
+                    message=f"'{task.title}' is due on {date_fmt} at {time_fmt} ({user_tz_str}) in less than {user_settings.reminder_lead_time_minutes} minutes.",
                     scheduled_for=now,
                     task_id=task.id,
                     deduplication_key=due_soon_key,
+                    target_datetime=dl_utc,
+                    timezone_str=user_tz_str,
+                    payload={
+                        "target_date": dl_loc.strftime("%Y-%m-%d"),
+                        "target_time": dl_loc.strftime("%H:%M:%S"),
+                        "timezone": user_tz_str,
+                        "target_datetime": dl_utc.isoformat(),
+                        "trigger_datetime": now.isoformat(),
+                        "lead_time_minutes": user_settings.reminder_lead_time_minutes,
+                        "event_type": "deadline",
+                    },
                 )
                 if notif and notif.status == "pending":
                     new_notifications.append(notif)
