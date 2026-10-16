@@ -591,3 +591,137 @@ export interface LifeOpsWorkflowResponse {
   workflow_steps: LifeOpsWorkflowStep[];
 }
 
+// -----------------------------------------------------------------------------
+// Mentor AI Educational Copilot Models
+// -----------------------------------------------------------------------------
+
+export interface CopilotChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp?: string;
+}
+
+export interface CopilotMessageRequest {
+  message: string;
+  client_timezone?: string;
+  conversation_history?: CopilotChatMessage[];
+  target_date?: string;
+}
+
+export interface CopilotScheduleItem {
+  id: string;
+  title: string;
+  item_type: "task" | "calendar_event";
+  start_time: string;
+  end_time: string;
+  raw_start: string;
+  raw_end: string;
+  status: string;
+  is_completed: boolean;
+  is_overdue: boolean;
+  priority?: TaskPriority | string | null;
+  task_id?: string | null;
+  event_id?: string | null;
+  sync_status?: CalendarSyncStatus | string | null;
+}
+
+export interface CopilotScheduleSummary {
+  target_date: string;
+  timezone: string;
+  total_items: number;
+
+  scheduled_items: CopilotScheduleItem[];
+  unscheduled_tasks: {
+    id: string;
+    title: string;
+    duration_minutes?: number;
+    priority?: string;
+    deadline?: string;
+  }[];
+  deadlines: {
+    id: string;
+    title: string;
+    deadline_time?: string;
+    priority?: string;
+    status?: string;
+  }[];
+  next_action?: string | null;
+  next_action_time?: string | null;
+  summary_text: string;
+}
+
+export interface EducationalResource {
+  title: string;
+  url: string;
+  platform: string;
+  topic: string;
+  difficulty: "Beginner" | "Intermediate" | "Advanced" | "All Levels" | string;
+  is_free: boolean;
+  description: string;
+  why_recommended: string;
+}
+
+export interface EmailDraftPreview {
+  thread_id?: string | null;
+  recipient_email: string;
+  recipient_name?: string | null;
+  subject: string;
+  body: string;
+  context_summary?: string | null;
+  requires_confirmation: boolean;
+  status: "draft_ready" | "ambiguous_recipient" | "not_found" | "sent" | "failed";
+  clarification_question?: string | null;
+  candidates?: { email: string; name: string }[];
+}
+
+export interface CopilotNavigationTarget {
+  route: string;
+  params: Record<string, string>;
+  label: string;
+}
+
+export interface StudentAccountabilitySummary {
+  missed_sessions_count: number;
+  completed_today_count: number;
+  total_tasks_count: number;
+  streak_days: number;
+  supportive_message: string;
+  suggested_recovery_task?: {
+    id: string;
+    title: string;
+    priority?: string;
+    duration_minutes?: number;
+  } | null;
+}
+
+export interface CopilotResponse {
+  reply: string;
+  intent: string;
+  schedule_summary?: CopilotScheduleSummary | null;
+  resources?: EducationalResource[] | null;
+  email_draft?: EmailDraftPreview | null;
+  navigation?: CopilotNavigationTarget | null;
+  accountability?: StudentAccountabilitySummary | null;
+  code_line_count?: number | null;
+  verification_status: "verified" | "clarification_needed" | "unsupported" | "error";
+}
+
+export interface CopilotActionConfirmRequest {
+  action_type: "send_email" | "reschedule_task";
+  email_payload?: {
+    recipient_email: string;
+    subject: string;
+    body: string;
+    thread_id?: string;
+  };
+  task_payload?: Record<string, any>;
+}
+
+export interface CopilotActionConfirmResponse {
+  success: boolean;
+  action_type: string;
+  result_message: string;
+  details?: Record<string, any> | null;
+}
+
+

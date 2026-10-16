@@ -17,7 +17,10 @@ NotificationType = Literal[
     "action_required",
     "action_failed",
     "task_completed",
+    "missed_session",
+    "schedule_recovery",
 ]
+
 
 NotificationChannel = Literal["in_app", "email", "browser_push"]
 

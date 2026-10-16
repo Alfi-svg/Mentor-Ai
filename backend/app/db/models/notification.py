@@ -27,9 +27,10 @@ class Notification(Base):
     __tablename__ = "notifications"
     __table_args__ = (
         CheckConstraint(
-            "notification_type IN ('due_soon', 'due_now', 'overdue', 'upcoming_task', 'schedule_conflict', 'calendar_revoked', 'calendar_stale', 'action_required', 'action_failed', 'task_completed')",
+            "notification_type IN ('due_soon', 'due_now', 'overdue', 'upcoming_task', 'schedule_conflict', 'calendar_revoked', 'calendar_stale', 'action_required', 'action_failed', 'task_completed', 'missed_session', 'schedule_recovery')",
             name="chk_notification_type",
         ),
+
         CheckConstraint(
             "status IN ('pending', 'processing', 'delivered', 'failed', 'cancelled', 'permanently_failed')",
             name="chk_notification_status",

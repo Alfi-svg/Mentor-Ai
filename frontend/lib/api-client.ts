@@ -701,4 +701,44 @@ export const apiClient = {
       body: JSON.stringify(req),
     });
   },
+
+  // --- Educational Copilot & Voice Assistant ---
+  copilot: {
+    async sendMessage(
+      payload: import("./types").CopilotMessageRequest
+    ): Promise<import("./types").CopilotResponse> {
+      return request<import("./types").CopilotResponse>("/copilot/message", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+
+    async confirmAction(
+      payload: import("./types").CopilotActionConfirmRequest
+    ): Promise<import("./types").CopilotActionConfirmResponse> {
+      return request<import("./types").CopilotActionConfirmResponse>("/copilot/action/confirm", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+
+    async getTodaySchedule(
+      timezone?: string
+    ): Promise<import("./types").CopilotScheduleSummary> {
+      const qs = timezone ? `?timezone=${encodeURIComponent(timezone)}` : "";
+      return request<import("./types").CopilotScheduleSummary>(`/copilot/schedule/today${qs}`);
+    },
+
+    async getAccountability(): Promise<import("./types").StudentAccountabilitySummary> {
+      return request<import("./types").StudentAccountabilitySummary>("/copilot/accountability");
+    },
+
+    async evaluateMissedSessions(): Promise<{ status: string; new_notifications_count: number }> {
+      return request<{ status: string; new_notifications_count: number }>(
+        "/copilot/accountability/evaluate",
+        { method: "POST" }
+      );
+    },
+  },
 };
+

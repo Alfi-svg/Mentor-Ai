@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     auth,
     calendar,
     chat,
+    copilot,
     gmail,
     health,
     lifeops,
@@ -15,6 +16,7 @@ from app.api.v1.endpoints import (
     schedule,
     tasks,
 )
+
 
 api_router = APIRouter()
 
@@ -30,7 +32,10 @@ api_router.include_router(schedule.router)
 api_router.include_router(planner.router)
 # Include chat assistant routes
 api_router.include_router(chat.router)
+# Include educational copilot routes
+api_router.include_router(copilot.router)
 # Include two-phase action approval routes
+
 api_router.include_router(actions.router)
 # Include calendar integration routes
 api_router.include_router(calendar.router)

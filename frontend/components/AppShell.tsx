@@ -23,6 +23,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { HealthStatusBadge } from "./HealthStatusBadge";
 import { NotificationBell } from "./NotificationBell";
+import { CopilotDrawer } from "./copilot/CopilotDrawer";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -34,6 +35,8 @@ export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
+
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -69,11 +72,18 @@ export function AppShell({ children }: AppShellProps) {
       description: "Overview & today's plan",
     },
     {
+      href: "/copilot",
+      label: "AI Copilot",
+      icon: Sparkles,
+      description: "Voice assistant & tutor",
+    },
+    {
       href: "/planner",
       label: "AI Planner",
       icon: Sparkles,
       description: "Natural-language planning",
     },
+
     {
       href: "/schedule",
       label: "Schedule",
@@ -201,16 +211,18 @@ export function AppShell({ children }: AppShellProps) {
           </div>
 
           <div className="flex items-center gap-3">
-            <Link
-              href="/planner"
-              className="hidden sm:inline-flex items-center gap-2 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 transition-colors"
+            <button
+              type="button"
+              onClick={() => setCopilotOpen(true)}
+              className="hidden sm:inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-colors"
             >
               <Sparkles className="h-3.5 w-3.5" />
               <span>Ask Mentor</span>
-            </Link>
+            </button>
             <NotificationBell />
             <HealthStatusBadge />
           </div>
+
         </header>
 
         {/* Mobile Navigation Drawer */}
@@ -267,7 +279,25 @@ export function AppShell({ children }: AppShellProps) {
 
         {/* Page Content Body */}
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">{children}</main>
+
+        {/* Persistent Floating Copilot Voice Assistant Launcher */}
+        <button
+          type="button"
+          onClick={() => setCopilotOpen(true)}
+          className="fixed bottom-6 right-6 z-30 flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-r from-indigo-600 to-purple-600 text-white shadow-xl hover:scale-110 active:scale-95 transition-all ring-2 ring-indigo-500/50 hover:shadow-indigo-500/30"
+          aria-label="Open Mentor AI Copilot"
+          title="Ask Mentor Copilot (Cmd+K)"
+        >
+          <Sparkles className="h-5 w-5 animate-pulse" />
+        </button>
+
+        {/* Global Copilot Drawer */}
+        <CopilotDrawer
+          isOpen={copilotOpen}
+          onClose={() => setCopilotOpen(false)}
+        />
       </div>
     </div>
   );
 }
+
