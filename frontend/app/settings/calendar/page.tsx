@@ -47,6 +47,30 @@ export default function CalendarSettingsPage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("connected") === "true") {
+        const email = params.get("email");
+        setSyncMessage(
+          email
+            ? `Google Calendar successfully connected for ${email}!`
+            : "Google Calendar successfully connected!"
+        );
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get("error")) {
+        const errParam = params.get("error");
+        const descParam = params.get("error_description");
+        setError(
+          descParam
+            ? `OAuth connection failed: ${descParam}`
+            : `OAuth connection failed: ${errParam}`
+        );
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
     loadStatus();
   }, [loadStatus]);
 

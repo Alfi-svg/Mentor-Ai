@@ -28,11 +28,36 @@ export default function GmailSettingsPage() {
   const [status, setStatus] = useState<GmailStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [messages, setMessages] = useState<GmailMessageSummary[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [selectedSummary, setSelectedSummary] = useState<GmailEmailSummaryResult | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get("connected") === "true") {
+        const email = params.get("email");
+        setSuccessMessage(
+          email
+            ? `Gmail successfully connected for ${email}!`
+            : "Gmail successfully connected!"
+        );
+        window.history.replaceState({}, document.title, window.location.pathname);
+      } else if (params.get("error")) {
+        const errParam = params.get("error");
+        const descParam = params.get("error_description");
+        setError(
+          descParam
+            ? `OAuth connection failed: ${descParam}`
+            : `OAuth connection failed: ${errParam}`
+        );
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    }
+  }, []);
 
   const fetchMessages = React.useCallback(async () => {
     setLoadingMessages(true);
@@ -131,6 +156,13 @@ export default function GmailSettingsPage() {
           <div className="flex items-center gap-3 rounded-lg border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-400">
             <AlertCircle className="h-5 w-5 shrink-0" />
             <p>{error}</p>
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="flex items-center gap-3 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-400">
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
+            <p>{successMessage}</p>
           </div>
         )}
 

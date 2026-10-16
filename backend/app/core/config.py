@@ -94,6 +94,17 @@ class Settings(BaseSettings):
         default=10.0, description="Gmail provider HTTP timeout"
     )
 
+    # External Application URLs
+    FRONTEND_URL: str = Field(
+        default="https://frontend-ten-delta-a5irgspmf7.vercel.app",
+        description="Public frontend URL for OAuth redirects",
+    )
+    BACKEND_PUBLIC_URL: str = Field(
+        default="https://mentor-ai-api-onzd.onrender.com",
+        description="Canonical public backend URL",
+    )
+    RENDER_EXTERNAL_URL: str = ""
+
     # Optional External Delivery Channels (SMTP / Push)
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
@@ -102,6 +113,56 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = ""
     VAPID_PUBLIC_KEY: str = ""
     VAPID_PRIVATE_KEY: str = ""
+
+    @field_validator("FRONTEND_URL", mode="after")
+    @classmethod
+    def assemble_frontend_url(cls, v: str, info: ValidationInfo) -> str:
+        """Ensure frontend URL is trimmed without trailing slashes and appropriate for environment."""
+        env = str(info.data.get("ENVIRONMENT", "development")).lower()
+        cleaned = v.strip().rstrip("/") if v else ""
+        if env != "production" and (cleaned == "https://frontend-ten-delta-a5irgspmf7.vercel.app" or not cleaned):
+            return "http://localhost:3000"
+        return cleaned or "https://frontend-ten-delta-a5irgspmf7.vercel.app"
+
+    @field_validator("GOOGLE_REDIRECT_URI", mode="after")
+    @classmethod
+    def assemble_google_redirect_uri(cls, v: str, info: ValidationInfo) -> str:
+        """Ensure Google Calendar redirect URI is valid, HTTPS in production, and strips trailing slashes."""
+        env = str(info.data.get("ENVIRONMENT", "development")).lower()
+        render_ext = str(info.data.get("RENDER_EXTERNAL_URL", "")).strip().rstrip("/")
+        backend_base = (
+            render_ext
+            or str(info.data.get("BACKEND_PUBLIC_URL", "https://mentor-ai-api-onzd.onrender.com")).strip().rstrip("/")
+        )
+
+        val = v.strip().rstrip("/") if v else ""
+
+        # In production mode: prevent localhost leaks and auto-heal known typo missing -onzd
+        if env == "production":
+            if not val or "localhost" in val or "127.0.0.1" in val or "mentor-ai-api.onrender.com" in val:
+                return f"{backend_base}/api/v1/calendar/callback"
+
+        return val or f"{backend_base}/api/v1/calendar/callback"
+
+    @field_validator("GOOGLE_GMAIL_REDIRECT_URI", mode="after")
+    @classmethod
+    def assemble_google_gmail_redirect_uri(cls, v: str, info: ValidationInfo) -> str:
+        """Ensure Google Gmail redirect URI is valid, HTTPS in production, and strips trailing slashes."""
+        env = str(info.data.get("ENVIRONMENT", "development")).lower()
+        render_ext = str(info.data.get("RENDER_EXTERNAL_URL", "")).strip().rstrip("/")
+        backend_base = (
+            render_ext
+            or str(info.data.get("BACKEND_PUBLIC_URL", "https://mentor-ai-api-onzd.onrender.com")).strip().rstrip("/")
+        )
+
+        val = v.strip().rstrip("/") if v else ""
+
+        # In production mode: prevent localhost leaks and auto-heal known typo missing -onzd
+        if env == "production":
+            if not val or "localhost" in val or "127.0.0.1" in val or "mentor-ai-api.onrender.com" in val:
+                return f"{backend_base}/api/v1/gmail/callback"
+
+        return val or f"{backend_base}/api/v1/gmail/callback"
 
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod

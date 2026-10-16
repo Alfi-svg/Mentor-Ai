@@ -88,3 +88,18 @@ test("Phase 6: Speech Recognition mock transcript accumulator", () => {
   assert.equal(transcript, "Prepare for exam tomorrow");
   assert.equal(interim, "");
 });
+
+test("OAuth callback redirect search params parsing for connected and error states", () => {
+  // Test connected state with email
+  const connectedUrl = "https://frontend-ten-delta-a5irgspmf7.vercel.app/settings/calendar?connected=true&email=user%40example.com";
+  const paramsSuccess = new URL(connectedUrl).searchParams;
+  assert.equal(paramsSuccess.get("connected"), "true");
+  assert.equal(paramsSuccess.get("email"), "user@example.com");
+
+  // Test error state with description
+  const errorUrl = "https://frontend-ten-delta-a5irgspmf7.vercel.app/settings/gmail?error=access_denied&error_description=User+declined+permissions";
+  const paramsError = new URL(errorUrl).searchParams;
+  assert.equal(paramsError.get("error"), "access_denied");
+  assert.equal(paramsError.get("error_description"), "User declined permissions");
+});
+

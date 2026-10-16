@@ -4,9 +4,13 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Query, status
+from urllib.parse import quote_plus
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
+from app.core.errors import AppException
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.session import get_db
 from app.schemas.action import ActionResponse
@@ -60,12 +64,62 @@ async def connect_gmail(
     description="Handles Google OAuth redirect for Gmail, validates CSRF state, and stores encrypted tokens.",
 )
 async def oauth_callback(
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-    code: str = Query(..., description="Authorization code from OAuth provider"),
-    state: str = Query(..., description="Signed CSRF state parameter"),
-) -> dict[str, Any]:
+    code: str | None = Query(default=None, description="Authorization code from OAuth provider"),
+    state: str | None = Query(default=None, description="Signed CSRF state parameter"),
+    error: str | None = Query(default=None, description="Error code from OAuth provider"),
+    error_description: str | None = Query(default=None, description="Error description from OAuth provider"),
+) -> Any:
     """Exchange authorization code and activate external Gmail connection."""
-    conn, email = await GmailService.handle_callback(code=code, state=state, db=db)
+    accept_header = request.headers.get("accept", "")
+    is_browser_nav = "text/html" in accept_header and "application/json" not in accept_header
+
+    # Handle provider denial or error (e.g. user clicked Cancel on Google consent screen)
+    if error:
+        err_msg = error_description or error or "OAuth authorization was denied or cancelled."
+        if is_browser_nav:
+            dest = f"{settings.FRONTEND_URL}/settings/gmail?error={quote_plus(error)}&error_description={quote_plus(err_msg)}"
+            return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+        raise AppException(
+            status_code=400,
+            error_code="OAUTH_ACCESS_DENIED",
+            detail=f"Gmail authorization was denied: {err_msg}",
+        )
+
+    if not code or not state:
+        err_msg = "Missing required OAuth authorization code or state token."
+        if is_browser_nav:
+            dest = f"{settings.FRONTEND_URL}/settings/gmail?error=missing_parameters&error_description={quote_plus(err_msg)}"
+            return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+        raise AppException(
+            status_code=400,
+            error_code="OAUTH_MISSING_PARAMETERS",
+            detail=err_msg,
+        )
+
+    try:
+        conn, email = await GmailService.handle_callback(code=code, state=state, db=db)
+    except AppException as exc:
+        if is_browser_nav:
+            dest = f"{settings.FRONTEND_URL}/settings/gmail?error={quote_plus(exc.error_code)}&error_description={quote_plus(exc.detail)}"
+            return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+        raise
+    except Exception as exc:
+        if is_browser_nav:
+            dest = f"{settings.FRONTEND_URL}/settings/gmail?error=callback_failed&error_description={quote_plus(str(exc))}"
+            return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+        raise AppException(
+            status_code=400,
+            error_code="OAUTH_CALLBACK_FAILED",
+            detail=f"Failed to complete Gmail authentication: {exc}",
+        )
+
+    if is_browser_nav:
+        email_param = f"&email={quote_plus(email)}" if email else ""
+        dest = f"{settings.FRONTEND_URL}/settings/gmail?connected=true{email_param}"
+        return RedirectResponse(url=dest, status_code=status.HTTP_303_SEE_OTHER)
+
     return {
         "status": "connected",
         "provider": conn.provider,
