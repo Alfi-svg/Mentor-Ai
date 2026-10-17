@@ -397,3 +397,76 @@ async def test_api_key_not_leaked_in_copilot_response(test_session: AsyncSession
         serialized = response.model_dump_json()
         assert secret_key_val not in serialized
         assert secret_key_val not in response.reply
+
+
+def test_copilot_system_prompt_english_only_and_chatgpt_formatting():
+    """Verify system prompt mandates strict English-only output and ChatGPT-style Markdown."""
+    prompt = CopilotAgent.build_system_prompt("Asia/Dhaka", "Friday, October 17, 2026 at 10:00 AM")
+    
+    assert "STRICT ENGLISH-ONLY OUTPUT ENFORCEMENT" in prompt
+    assert "ALL OF YOUR RESPONSES (both written and spoken) MUST BE DELIVERED EXCLUSIVELY IN PROFESSIONAL, CLEAR ENGLISH" in prompt
+    assert "Never reply in Bangla or Banglish" in prompt
+    assert "CHATGPT-STYLE RESPONSE QUALITY & FORMATTING" in prompt
+    assert "Markdown headings" in prompt
+    assert "MAXIMUM 100 LINES PER CODE BLOCK" in prompt
+    assert "GMAIL CONFIRMATION GATE" in prompt
+
+
+@pytest.mark.asyncio
+async def test_gemini_audio_transcription_fidelity():
+    """Verify Gemini STT receives audio Part and uses configured model with verbatim prompt."""
+    fake_audio = b"\x1aE\xdf\xa3" + b"B" * 200
+    mock_response = MagicMock()
+    mock_response.text = "Show me today's schedule"
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+    with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client), patch.object(
+        settings, "GEMINI_MODEL", "gemini-3.8-flash"
+    ):
+        res = await CopilotAgent.transcribe_audio(fake_audio, "recording.webm", content_type="audio/webm")
+
+        assert res.transcript == "Show me today's schedule"
+        mock_client.aio.models.generate_content.assert_called_once()
+        call_kwargs = mock_client.aio.models.generate_content.call_args.kwargs
+        assert call_kwargs["model"] == "gemini-3.8-flash"
+        contents = call_kwargs["contents"]
+        assert len(contents) == 2
+        # First content is audio part
+        assert isinstance(contents[0], types.Part)
+        assert contents[0].inline_data.mime_type == "audio/webm"
+        # Second content is verbatim transcription prompt
+        assert "Transcribe the spoken audio verbatim" in contents[1]
+        assert "Accurately capture Bangla, English, or mixed Banglish speech" in contents[1]
+
+
+@pytest.mark.asyncio
+async def test_bangla_voice_input_routes_to_gemini_and_returns_english(test_session: AsyncSession, setup_gemini_user: dict):
+    """Verify user input in Bangla/Banglish routes to Gemini and returns structured English response."""
+    user_id = setup_gemini_user["user_id"]
+
+    mock_text_part = types.Part(text="## Your Tasks for Today\n\nHere are the tasks scheduled for today:\n\n1. **DFA Minimization Assignment** — Due at 06:00 PM (P1).\n\n### Recommended Next Step\n\nFocus on the DFA minimization assignment first.")
+    mock_candidate = MagicMock()
+    mock_candidate.content = types.Content(role="model", parts=[mock_text_part])
+    mock_response = MagicMock(candidates=[mock_candidate])
+
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+    with patch.object(settings, "AI_PROVIDER", "gemini"), patch.object(
+        CopilotAgent, "get_gemini_client", return_value=mock_client
+    ):
+        req = CopilotMessageRequest(
+            message="amar ajker task gula dao",
+            client_timezone="Asia/Dhaka",
+            input_mode="voice",
+        )
+        res = await CopilotAgent.process_message(db=test_session, user_id=user_id, req=req)
+
+        assert "## Your Tasks for Today" in res.reply
+        assert "DFA Minimization Assignment" in res.reply
+        assert res.input_mode == "voice"
+        assert res.spoken_reply is not None
+        assert "Your Tasks for Today" in res.spoken_reply
+

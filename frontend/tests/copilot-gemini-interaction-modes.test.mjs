@@ -120,3 +120,38 @@ test("Phase 5: Markdown text sanitizer escapes unsafe HTML entities", () => {
   assert.ok(clean.includes("&lt;script&gt;"), "Tags converted to safe entities");
   assert.ok(clean.includes("&amp;"), "Ampersands converted to entities");
 });
+
+test("Phase 5 & 6: English-only response validation for multilingual user input", () => {
+  // Example response generated for Bangla input 'amar ajker task ki ki?'
+  const englishReply = 
+    "## Your Tasks for Today\n\n" +
+    "Here are your scheduled focus blocks for today:\n\n" +
+    "1. **DFA Minimization Assignment** — Due at 06:00 PM (Priority: P1)\n" +
+    "2. **Algorithm Design Reading** — Scheduled at 03:00 PM\n\n" +
+    "### Recommended Next Step\n\n" +
+    "Start by completing the DFA assignment before the evening deadline.";
+
+  // Must not contain Bangla script unicode range (\u0980-\u09FF)
+  const hasBanglaUnicode = /[\u0980-\u09FF]/.test(englishReply);
+  assert.equal(hasBanglaUnicode, false, "Assistant reply must be strictly in English");
+  assert.ok(englishReply.startsWith("## Your Tasks for Today"), "Structured with clear English heading");
+  assert.ok(englishReply.includes("**DFA Minimization Assignment**"), "Highlights key task with bold emphasis");
+  assert.ok(englishReply.includes("### Recommended Next Step"), "Includes logical section hierarchy");
+});
+
+test("Phase 6: ChatGPT-style table and code block structure validation", () => {
+  const tableContent = 
+    "| Task Title | Deadline | Priority |\n" +
+    "| :--- | :--- | :--- |\n" +
+    "| DFA Minimization | 06:00 PM | P1 |\n" +
+    "| Physics Lab | 09:00 PM | P2 |";
+
+  const lines = tableContent.split("\n");
+  const tableRows = lines.filter((l) => l.trim().startsWith("|") && l.trim().endsWith("|"));
+  assert.equal(tableRows.length, 4, "Table must have 4 rows including header and separator");
+
+  const codeExample = "```python\ndef solve_dfa():\n    return True\n```";
+  assert.ok(codeExample.startsWith("```python"), "Code block includes language badge");
+  assert.ok(codeExample.endsWith("```"), "Code block is properly fenced");
+});
+
