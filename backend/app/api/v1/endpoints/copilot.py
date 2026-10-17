@@ -8,6 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
+
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.models.profile import UserPreferences
 from app.db.session import get_db
@@ -28,6 +36,13 @@ from app.services.copilot.accountability import StudentAccountabilityService
 from app.services.copilot.email_copilot import CopilotEmailService
 from app.services.copilot.tools import get_today_schedule, resolve_user_timezone
 from app.services.copilot_agent import CopilotAgent
+
+ALLOWED_AUDIO_EXTENSIONS = {
+    ".webm", ".wav", ".mp3", ".m4a", ".ogg", ".oga", ".flac", ".mp4", ".mpeg", ".mpga"
+}
+ALLOWED_AUDIO_MIME_PREFIXES = ("audio/", "video/", "application/octet-stream")
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
+MIN_AUDIO_BYTES = 64
 
 router = APIRouter(prefix="/copilot", tags=["copilot"])
 
@@ -122,24 +137,66 @@ async def transcribe_audio_endpoint(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> CopilotTranscribeResponse:
     """Convert spoken voice audio into text transcript."""
+    filename = file.filename or "recording.webm"
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".webm"
+    if ext not in ALLOWED_AUDIO_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported audio format '{ext}'. Supported formats: webm, wav, mp3, m4a, ogg, flac, mp4.",
+        )
+
+    if file.content_type and not any(file.content_type.startswith(prefix) for prefix in ALLOWED_AUDIO_MIME_PREFIXES):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported audio MIME type '{file.content_type}'.",
+        )
+
     contents = await file.read()
-    if len(contents) > 25 * 1024 * 1024:
+    if len(contents) > MAX_AUDIO_BYTES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Audio recording exceeds 25MB maximum upload limit.",
         )
-    if not contents:
+    if not contents or len(contents) < MIN_AUDIO_BYTES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Empty audio recording submitted.",
+            detail="Audio recording is empty or corrupt.",
         )
+
     try:
-        return await CopilotAgent.transcribe_audio(contents, filename=file.filename or "recording.webm")
+        return await CopilotAgent.transcribe_audio(contents, filename=filename)
     except ValueError as val_err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(val_err),
         )
+    except AuthenticationError as auth_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OpenAI authentication failed: {auth_err}",
+        )
+    except RateLimitError as rl_err:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"OpenAI speech-to-text rate limit exceeded: {rl_err}",
+        )
+    except APITimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Speech-to-text transcription request timed out.",
+        )
+    except BadRequestError as br_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OpenAI transcription rejected audio: {br_err}",
+        )
+    except APIConnectionError as conn_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to OpenAI audio service: {conn_err}",
+        )
+    except HTTPException:
+        raise
     except Exception as err:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -157,16 +214,63 @@ async def synthesize_speech_endpoint(
     current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
 ) -> Response:
     """Generate audio stream for spoken response."""
+    if not payload.text or not payload.text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Speech text must not be empty or whitespace.",
+        )
+    if len(payload.text) > 4096:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Speech text exceeds 4096 character maximum limit.",
+        )
+
     try:
         audio_bytes = await CopilotAgent.synthesize_speech(
             text=payload.text, voice_preset=payload.voice or "nova"
         )
-        return Response(content=audio_bytes, media_type="audio/mpeg")
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Type": "audio/mpeg",
+                "Accept-Ranges": "bytes",
+                "X-AI-Generated": "true",
+                "Cache-Control": "private, max-age=3600",
+            },
+        )
     except ValueError as val_err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(val_err),
         )
+    except AuthenticationError as auth_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"OpenAI authentication failed: {auth_err}",
+        )
+    except RateLimitError as rl_err:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"OpenAI speech synthesis rate limit exceeded: {rl_err}",
+        )
+    except APITimeoutError:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Speech synthesis request timed out.",
+        )
+    except BadRequestError as br_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OpenAI speech synthesis rejected: {br_err}",
+        )
+    except APIConnectionError as conn_err:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to OpenAI audio service: {conn_err}",
+        )
+    except HTTPException:
+        raise
     except Exception as err:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -228,6 +332,7 @@ async def update_copilot_preferences(
                 "voice_gender": "feminine",
                 "auto_play_speech": True,
                 "stt_engine": "openai",
+                "review_before_send": True,
             },
         )
         db.add(prefs)
@@ -241,11 +346,14 @@ async def update_copilot_preferences(
         current_settings["auto_play_speech"] = payload.auto_play_speech
     if payload.stt_engine is not None:
         current_settings["stt_engine"] = payload.stt_engine
+    if payload.review_before_send is not None:
+        current_settings["review_before_send"] = payload.review_before_send
 
     prefs.copilot_settings = current_settings
     await db.commit()
     await db.refresh(prefs)
     return CopilotPreferences(**prefs.copilot_settings)
+
 
 
 @router.get(

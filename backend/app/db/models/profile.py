@@ -121,6 +121,7 @@ class UserPreferences(Base):
             "voice_gender": "feminine",
             "auto_play_speech": True,
             "stt_engine": "openai",
+            "review_before_send": True,
         },
     )
 

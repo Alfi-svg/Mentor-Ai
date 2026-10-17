@@ -99,6 +99,8 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
   const [selectedGender, setSelectedGender] = useState<"masculine" | "feminine">("feminine");
   const [availableVoices, setAvailableVoices] = useState<CopilotVoiceOption[]>(DEFAULT_VOICES);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+  const [reviewBeforeSend, setReviewBeforeSend] = useState<boolean>(true);
+  const [transcriptNotice, setTranscriptNotice] = useState<string | null>(null);
 
   // Email confirmation action loading
   const [emailSending, setEmailSending] = useState(false);
@@ -109,6 +111,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const textInputRef = useRef<HTMLInputElement | null>(null);
 
   // Conversation history
   const [messages, setMessages] = useState<ChatEntry[]>([
@@ -144,6 +147,9 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
         if (prefs?.voice_preset) {
           setSelectedVoice(prefs.voice_preset);
           setSelectedGender(prefs.voice_gender || "feminine");
+        }
+        if (typeof prefs?.review_before_send === "boolean") {
+          setReviewBeforeSend(prefs.review_before_send);
         }
       })
       .catch((err) => {
@@ -376,18 +382,35 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           setIsRecordingMedia(false);
           const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
 
-          if (audioBlob.size > 2000) {
-            setOrbState("thinking");
-            try {
-              const res = await apiClient.copilot.transcribeAudio(audioBlob, "speech.webm");
-              if (res.transcript && res.transcript.trim()) {
-                setInputText(res.transcript.trim());
-                handleSend(res.transcript.trim(), true);
+          if (audioBlob.size < 64) {
+            setOrbState("idle");
+            setErrorMessage("Audio recording is empty or too short. Please speak clearly and try again.");
+            return;
+          }
+
+          setOrbState("thinking");
+          try {
+            const res = await apiClient.copilot.transcribeAudio(audioBlob, "speech.webm");
+            if (res.transcript && res.transcript.trim()) {
+              const spokenWords = res.transcript.trim();
+              setInputText(spokenWords);
+              if (reviewBeforeSend) {
+                setOrbState("idle");
+                setTranscriptNotice("Transcript captured! Review and edit your prompt below, then press Enter or Send.");
+                setTimeout(() => {
+                  textInputRef.current?.focus();
+                }, 50);
+                return;
+              } else {
+                handleSend(spokenWords, true);
                 return;
               }
-            } catch (transcribeErr: any) {
-              console.warn("Whisper transcription failed, falling back:", transcribeErr);
+            } else {
+              setErrorMessage("No clear speech recognized. Please try speaking again.");
             }
+          } catch (transcribeErr: any) {
+            console.warn("Whisper transcription failed:", transcribeErr);
+            setErrorMessage(transcribeErr?.message || "Speech transcription failed. Please try again.");
           }
           setOrbState("idle");
         };
@@ -419,6 +442,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     if (!text || loading) return;
 
     stopSpeaking();
+    setTranscriptNotice(null);
     setInputText("");
     setLoading(true);
     setOrbState("thinking");
@@ -555,6 +579,40 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     }
   };
 
+  const handleReplaySpeech = async (text: string) => {
+    stopSpeaking();
+    setOrbState("speaking");
+    setIsSpeaking(true);
+
+    try {
+      const blob = await apiClient.copilot.getSpeechAudio(text, selectedVoice);
+      const audioUrl = URL.createObjectURL(blob);
+      const audio = new Audio(audioUrl);
+      audioPlayerRef.current = audio;
+
+      audio.onplay = () => {
+        setIsSpeaking(true);
+        setOrbState("speaking");
+      };
+
+      audio.onended = () => {
+        setIsSpeaking(false);
+        setOrbState("idle");
+        audioPlayerRef.current = null;
+      };
+
+      audio.onerror = () => {
+        speakTextFallback(text);
+      };
+
+      await audio.play();
+    } catch (err) {
+      console.warn("OpenAI TTS replay failed, using speech synthesis fallback:", err);
+      speakTextFallback(text);
+    }
+  };
+
+
   const handleNavigate = (target?: { route: string; params?: Record<string, string> } | null) => {
     if (!target) return;
     const query = target.params
@@ -647,6 +705,17 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
               </span>
             </div>
 
+            {/* Acoustic Profile & Safety Disclaimer */}
+            <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-2.5 mb-3 text-[11px] text-zinc-300">
+              <div className="flex items-center gap-1.5 font-medium text-indigo-300 mb-0.5">
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>Acoustic Profile Notice</span>
+              </div>
+              <p className="text-zinc-400 leading-normal">
+                Voice styles (masculine/feminine-sounding) represent synthetic acoustic characteristics, not human gender identities. All spoken audio is AI-generated using OpenAI Text-to-Speech.
+              </p>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {availableVoices.map((voice) => {
                 const isSelected = selectedVoice === voice.id;
@@ -696,6 +765,36 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                 );
               })}
             </div>
+
+            {/* Review Transcript Toggle */}
+            <div className="mt-3 pt-3 border-t border-zinc-800 flex items-center justify-between">
+              <div>
+                <span className="text-xs font-medium text-white block">Review transcript before sending</span>
+                <span className="text-[10px] text-zinc-400">Place spoken words into input box to edit before dispatch</span>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  const next = !reviewBeforeSend;
+                  setReviewBeforeSend(next);
+                  try {
+                    await apiClient.copilot.updatePreferences({ review_before_send: next });
+                  } catch (err) {
+                    console.warn("Failed to update review_before_send preference", err);
+                  }
+                }}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                  reviewBeforeSend ? "bg-indigo-600" : "bg-zinc-800"
+                }`}
+                title={reviewBeforeSend ? "Transcript review enabled" : "Instant auto-send enabled"}
+              >
+                <span
+                  className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                    reviewBeforeSend ? "translate-x-4.5" : "translate-x-1"
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         )}
 
@@ -719,6 +818,21 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           <span className="mt-1 text-[10px] text-zinc-500">
             AI-generated voice • {selectedVoice.toUpperCase()} ({selectedGender})
           </span>
+
+          {/* Active AI-Generated Voice Indicator Bar */}
+          {isSpeaking && (
+            <div className="mt-2 flex items-center gap-2 rounded-full bg-indigo-600/20 border border-indigo-500/30 px-3 py-1 text-xs text-indigo-300 animate-pulse">
+              <Volume2 className="h-3.5 w-3.5 text-indigo-400" />
+              <span>AI-Generated Voice • {selectedVoice.toUpperCase()} ({selectedGender})</span>
+              <button
+                type="button"
+                onClick={stopSpeaking}
+                className="ml-2 rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-300 hover:text-white hover:bg-zinc-700"
+              >
+                Stop
+              </button>
+            </div>
+          )}
 
           {interimTranscript && (
             <div className="mt-2 px-4 py-1.5 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-xs text-indigo-300 italic max-w-sm truncate animate-pulse">
@@ -937,6 +1051,33 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                     </div>
                   </div>
                 )}
+                {/* Voice Replay Action */}
+                {msg.role === "assistant" && (
+                  <div className="mt-3 pt-2 border-t border-zinc-800/60 flex items-center justify-between text-[11px] text-zinc-400">
+                    <span className="inline-flex items-center gap-1 text-[10px] text-zinc-500 uppercase font-semibold tracking-wider">
+                      <Sparkles className="h-3 w-3 text-indigo-400" />
+                      AI Voice
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (msg.response?.speech_audio_base64) {
+                          playSynthesizedAudio(
+                            msg.response.speech_audio_base64,
+                            msg.response.speech_audio_format || "audio/mpeg"
+                          );
+                        } else {
+                          handleReplaySpeech(msg.response?.spoken_reply || msg.text);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+                      title="Listen to AI voice reading this response"
+                    >
+                      <Volume2 className="h-3.5 w-3.5" />
+                      <span>Listen</span>
+                    </button>
+                  </div>
+                )}
               </div>
               <span className="mt-1 text-[10px] text-zinc-500">{msg.timestamp}</span>
             </div>
@@ -962,6 +1103,18 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
         {/* Input Bar */}
         <div className="border-t border-zinc-800 bg-zinc-950 p-4">
+          {transcriptNotice && (
+            <div className="mb-2.5 flex items-center justify-between rounded-lg bg-indigo-500/10 border border-indigo-500/20 px-3 py-1.5 text-xs text-indigo-300 animate-in fade-in">
+              <span className="truncate">{transcriptNotice}</span>
+              <button
+                type="button"
+                onClick={() => setTranscriptNotice(null)}
+                className="ml-2 text-zinc-400 hover:text-white"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -989,9 +1142,14 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
             {/* Text Input Field */}
             <input
+              ref={textInputRef}
               type="text"
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => {
+                setInputText(e.target.value);
+                if (isSpeaking) stopSpeaking();
+                if (transcriptNotice) setTranscriptNotice(null);
+              }}
               placeholder="Ask Mentor in English, Bangla, or Banglish..."
               disabled={loading}
               className="flex-1 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"

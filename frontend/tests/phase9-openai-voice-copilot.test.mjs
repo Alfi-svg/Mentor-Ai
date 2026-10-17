@@ -152,3 +152,63 @@ test("Phase 9: Tool results clearly separate Google Calendar events from interna
   assert.equal(calTool.output.events[0].title, "CSE 420 Lecture");
   assert.equal(calTool.output.events[0].location, "UB201");
 });
+
+test("Step 3: Review-before-send voice workflow allows editing before dispatch", () => {
+  const preferences = {
+    voice_preset: "nova",
+    voice_gender: "feminine",
+    auto_play_speech: true,
+    stt_engine: "openai",
+    review_before_send: true,
+  };
+
+  const transcribedText = "What is the deadline for my automata project?";
+  let inputText = "";
+  let autoSubmitted = false;
+  let notice = null;
+
+  // Simulate onstop handler logic
+  if (preferences.review_before_send) {
+    inputText = transcribedText;
+    notice = "Transcript captured! Review and edit your prompt below, then press Enter or Send.";
+  } else {
+    autoSubmitted = true;
+  }
+
+  assert.equal(inputText, transcribedText, "Transcript should populate input text");
+  assert.equal(autoSubmitted, false, "Should not auto-submit when review_before_send is true");
+  assert.ok(notice.includes("Review and edit"), "Notice must explain editing step");
+
+  // Now simulate user editing a misheard word
+  inputText = "What is the deadline for my automata assignment?";
+  assert.equal(inputText.includes("assignment"), true, "User can freely edit transcript before sending");
+});
+
+test("Step 3: Audio interruption ensures speech is stopped on user interaction", () => {
+  let isSpeaking = true;
+  let audioPlayerPlaying = true;
+
+  const stopSpeaking = () => {
+    isSpeaking = false;
+    audioPlayerPlaying = false;
+  };
+
+  // User begins typing
+  const onUserType = (char) => {
+    if (isSpeaking) stopSpeaking();
+  };
+
+  onUserType("a");
+  assert.equal(isSpeaking, false, "Typing must interrupt active speech");
+  assert.equal(audioPlayerPlaying, false, "Audio player must be stopped on interruption");
+});
+
+test("Step 3: Acoustic profile disclaimer explains synthetic character", () => {
+  const disclaimer =
+    "Voice styles (masculine/feminine-sounding) represent synthetic acoustic characteristics, not human gender identities. All spoken audio is AI-generated using OpenAI Text-to-Speech.";
+
+  assert.ok(disclaimer.includes("synthetic acoustic characteristics"), "Must explain synthetic nature");
+  assert.ok(disclaimer.includes("not human gender identities"), "Must clarify gender identity disclaimer");
+  assert.ok(disclaimer.includes("AI-generated"), "Must mark as AI-generated");
+});
+

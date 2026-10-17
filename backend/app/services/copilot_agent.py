@@ -15,7 +15,14 @@ import zoneinfo
 from datetime import UTC, datetime
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -728,6 +735,15 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                 transcript=transcript_obj.text.strip(),
                 language=getattr(transcript_obj, "language", None),
             )
+        except (
+            APIConnectionError,
+            APITimeoutError,
+            AuthenticationError,
+            BadRequestError,
+            RateLimitError,
+        ) as api_err:
+            logger.error("OpenAI Whisper STT API error", error=str(api_err), model=stt_model)
+            raise
         except Exception as exc:
             logger.error("Whisper transcription failed", error=str(exc))
             raise RuntimeError(f"Speech transcription failed: {exc}") from exc
@@ -740,15 +756,18 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             raise ValueError("OpenAI API key is not configured. Speech synthesis requires OPENAI_API_KEY.")
 
         # Clean text and bound to safe length
-        clean_text = cls._clean_text_for_speech(text)[:2000]
-        if not clean_text:
+        clean_text = cls._clean_text_for_speech(text)[:4096]
+        if not clean_text or not clean_text.strip():
             clean_text = "I am ready to help."
 
-        # Validate voice preset
+        # Validate voice preset against supported OpenAI TTS presets
         valid_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
         selected_voice = voice_preset.lower() if voice_preset.lower() in valid_voices else "nova"
 
-        tts_model = settings.OPENAI_TTS_MODEL or "tts-1"
+        # Check TTS model compatibility
+        valid_models = {"tts-1", "tts-1-hd"}
+        tts_model = settings.OPENAI_TTS_MODEL if settings.OPENAI_TTS_MODEL in valid_models else "tts-1"
+
         try:
             response = await client.audio.speech.create(
                 model=tts_model,
@@ -770,6 +789,15 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                 if isinstance(res, bytes):
                     return res
             return getattr(response, "content", b"")
+        except (
+            APIConnectionError,
+            APITimeoutError,
+            AuthenticationError,
+            BadRequestError,
+            RateLimitError,
+        ) as api_err:
+            logger.error("OpenAI TTS speech synthesis API error", error=str(api_err), voice=selected_voice, model=tts_model)
+            raise
         except Exception as exc:
             logger.error("OpenAI TTS speech synthesis failed", error=str(exc))
             raise RuntimeError(f"Text-to-speech synthesis failed: {exc}") from exc
@@ -781,17 +809,55 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
 
     @classmethod
     def _clean_text_for_speech(cls, text: str) -> str:
-        """Remove markdown artifacts, code blocks, and URLs for natural spoken playback."""
-        # Remove code blocks
+        """Remove markdown artifacts, code blocks, raw JSON, tool signatures, and URLs for natural spoken playback."""
+        if not text:
+            return ""
+
+        # Remove fenced code blocks
         clean = re.sub(r"```[\s\S]*?```", "Here is a code example.", text)
-        # Remove markdown links, keep label
+
+        # Remove JSON-like payload blocks (e.g. {"tool": ..., ...} or {...})
+        clean = re.sub(r"\{[^{}]*\"[a-zA-Z0-9_-]+\"\s*:[^{}]*\}", "", clean)
+        clean = re.sub(r"\{[\s\S]*?\}", "", clean)
+
+        # Remove markdown GitHub alert headers like > [!NOTE], > [!IMPORTANT]
+        clean = re.sub(r">\s*\[!.*?\]", "", clean)
+        clean = re.sub(r"^>+\s*", "", clean, flags=re.MULTILINE)
+
+        # Remove internal tool names/signatures like get_today_tasks(), prepare_gmail_reply(...)
+        clean = re.sub(
+            r"\b(get_today_tasks|get_task_details|get_upcoming_deadlines|get_overdue_tasks|get_completed_tasks|get_task_summary|get_today_calendar_events|get_calendar_events_for_date|get_upcoming_calendar_events|get_calendar_event_details|search_gmail_messages|get_gmail_message|get_gmail_thread|summarize_gmail_message|prepare_gmail_reply|search_educational_resources|get_student_accountability)\([^)]*\)",
+            "",
+            clean,
+        )
+        clean = re.sub(
+            r"\b(get_today_tasks|get_task_details|get_upcoming_deadlines|get_overdue_tasks|get_completed_tasks|get_task_summary|get_today_calendar_events|get_calendar_events_for_date|get_upcoming_calendar_events|get_calendar_event_details|search_gmail_messages|get_gmail_message|get_gmail_thread|summarize_gmail_message|prepare_gmail_reply|search_educational_resources|get_student_accountability)\b",
+            "",
+            clean,
+        )
+
+        # Remove UUIDs and approval tokens
+        clean = re.sub(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b", "", clean)
+        clean = re.sub(r"\bappr_[0-9a-fA-F]+\b", "", clean)
+
+        # Remove markdown table rows and separators
+        clean = re.sub(r"\|[^\n]+\|", "", clean)
+        clean = re.sub(r"[-:]{3,}", "", clean)
+
+        # Remove markdown links, keep anchor label
         clean = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", clean)
         # Remove standalone URLs
         clean = re.sub(r"https?://\S+", "", clean)
-        # Remove markdown bold/italics/headers
-        clean = re.sub(r"[*_#`>]", "", clean)
+        # Remove markdown bold/italics/headers/bullets/backticks
+        clean = re.sub(r"[*_#`~]", "", clean)
+        clean = re.sub(r"^\s*[-+*]\s+", "", clean, flags=re.MULTILINE)
+        clean = re.sub(r"^\s*\d+\.\s+", "", clean, flags=re.MULTILINE)
+
         # Replace multiple newlines with single period
         clean = re.sub(r"\n+", ". ", clean)
-        # Collapse multiple spaces
+        # Collapse multiple spaces and trim
         clean = re.sub(r"\s+", " ", clean).strip()
-        return clean
+        # Clean up double periods or trailing punctuation
+        clean = re.sub(r"\.{2,}", ".", clean)
+        clean = re.sub(r"\s+\.", ".", clean)
+        return clean.strip()

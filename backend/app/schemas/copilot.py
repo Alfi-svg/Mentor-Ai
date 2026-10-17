@@ -200,6 +200,7 @@ class CopilotPreferences(BaseModel):
     voice_gender: Literal["masculine", "feminine"] = "feminine"
     auto_play_speech: bool = True
     stt_engine: str = "openai"
+    review_before_send: bool = True
 
 
 class CopilotPreferencesUpdate(BaseModel):
@@ -209,6 +210,7 @@ class CopilotPreferencesUpdate(BaseModel):
     voice_gender: Literal["masculine", "feminine"] | None = None
     auto_play_speech: bool | None = None
     stt_engine: str | None = None
+    review_before_send: bool | None = None
 
 
 class CopilotTranscribeResponse(BaseModel):
@@ -221,5 +223,5 @@ class CopilotTranscribeResponse(BaseModel):
 class CopilotSpeechRequest(BaseModel):
     """Request to synthesize spoken audio from text."""
 
-    text: str = Field(..., min_length=1, max_length=2000)
+    text: str = Field(..., min_length=1, max_length=4096)
     voice: str | None = Field(default=None, description="Voice preset (e.g. echo, nova)")

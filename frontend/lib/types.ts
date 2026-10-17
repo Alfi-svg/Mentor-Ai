@@ -749,6 +749,7 @@ export interface CopilotPreferences {
   voice_gender: "masculine" | "feminine";
   auto_play_speech: boolean;
   stt_engine: string;
+  review_before_send?: boolean;
 }
 
 export interface CopilotPreferencesUpdate {
@@ -756,6 +757,7 @@ export interface CopilotPreferencesUpdate {
   voice_gender?: "masculine" | "feminine";
   auto_play_speech?: boolean;
   stt_engine?: string;
+  review_before_send?: boolean;
 }
 
 export interface CopilotTranscribeResponse {
