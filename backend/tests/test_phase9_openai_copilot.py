@@ -39,6 +39,12 @@ from app.services.copilot.tools import (
 from app.services.copilot_agent import CopilotAgent
 from app.services.gmail.service import GmailService
 
+@pytest.fixture(autouse=True)
+def configure_openai_provider():
+    """Ensure tests in this module route specifically to the OpenAI provider without network calls."""
+    with patch.object(settings, "AI_PROVIDER", "openai"), patch.object(settings, "GEMINI_API_KEY", ""):
+        yield
+
 
 @pytest.fixture
 async def test_session():

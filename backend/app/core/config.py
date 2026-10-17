@@ -46,9 +46,9 @@ class Settings(BaseSettings):
     TEST_DATABASE_URL: str = "sqlite+aiosqlite:///./test_mentor_ai.db"
 
     # AI Model Provider
-    AI_PROVIDER: str = Field(default="offline", description="offline | gemini | groq")
+    AI_PROVIDER: str = Field(default="gemini", description="gemini | openai | offline")
     GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = Field(default="gemini-2.0-flash", description="Gemini model name")
+    GEMINI_MODEL: str = Field(default="gemini-3.8-flash", description="Gemini model name")
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = Field(default="llama-3.3-70b-versatile", description="Groq model name")
     AI_REQUEST_TIMEOUT_SECONDS: float = Field(default=12.0, description="AI provider HTTP timeout")
@@ -238,6 +238,15 @@ class Settings(BaseSettings):
     def has_push_credentials(self) -> bool:
         """Check whether browser push VAPID credentials are configured."""
         return bool(self.VAPID_PUBLIC_KEY and self.VAPID_PRIVATE_KEY)
+
+    @property
+    def has_gemini_credentials(self) -> bool:
+        """Check whether valid Gemini API credentials have been configured."""
+        return bool(
+            self.GEMINI_API_KEY
+            and self.GEMINI_API_KEY.strip()
+            and "placeholder" not in self.GEMINI_API_KEY.lower()
+        )
 
     @property
     def has_openai_credentials(self) -> bool:

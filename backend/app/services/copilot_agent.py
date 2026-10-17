@@ -15,6 +15,8 @@ import zoneinfo
 from datetime import UTC, datetime
 from typing import Any
 
+from google import genai
+from google.genai import errors, types
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -350,7 +352,37 @@ OPENAI_AGENT_TOOLS = [
 
 
 class CopilotAgent:
-    """Production OpenAI-powered Personal Educational Copilot Agent."""
+    """Production Multi-Provider (Gemini / OpenAI) Personal Educational Copilot Agent."""
+
+    @classmethod
+    def get_gemini_client(cls) -> genai.Client | None:
+        """Initialize google-genai Client if GEMINI_API_KEY is configured."""
+        if not settings.has_gemini_credentials:
+            return None
+        return genai.Client(api_key=settings.GEMINI_API_KEY.strip())
+
+    @classmethod
+    def get_gemini_tools(cls) -> list[types.Tool]:
+        """Construct Gemini-compatible FunctionDeclaration list for all 17 agent tools."""
+        gemini_funcs: list[types.FunctionDeclaration] = []
+        for tool_def in OPENAI_AGENT_TOOLS:
+            fn = tool_def["function"]
+            name = fn["name"]
+            desc = fn.get("description", "")
+            params = fn.get("parameters", {"type": "object", "properties": {}})
+            cleaned_params: dict[str, Any] = {
+                "type": params.get("type", "OBJECT"),
+                "properties": params.get("properties", {}),
+            }
+            if "required" in params:
+                cleaned_params["required"] = params["required"]
+            decl = types.FunctionDeclaration(
+                name=name,
+                description=desc,
+                parameters=cleaned_params,
+            )
+            gemini_funcs.append(decl)
+        return [types.Tool(function_declarations=gemini_funcs)]
 
     @classmethod
     def get_openai_client(cls) -> AsyncOpenAI | None:
@@ -389,75 +421,388 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
 """
 
     @classmethod
-    async def process_message(
+    async def _execute_single_tool(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        user_tz: str,
+        now_loc: datetime,
+        fn_name: str,
+        fn_args: dict[str, Any],
+        context_state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Unified tool execution dispatcher enforcing user isolation, validation, and structured context collection."""
+        try:
+            if fn_name == "get_today_tasks":
+                tool_output = await get_today_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
+                context_state["schedule_summary"] = await get_today_schedule(db=db, user_id=user_id, user_tz_str=user_tz)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/tasks",
+                    params={"filter": "today"},
+                    label="View Today's Tasks",
+                )
+                return tool_output
+
+            elif fn_name == "get_task_details":
+                task_id = str(fn_args.get("task_id", ""))
+                return await get_task_details(db=db, user_id=user_id, task_id=task_id)
+
+            elif fn_name == "get_upcoming_deadlines":
+                days = int(fn_args.get("days", 7))
+                deadlines_list = await get_upcoming_deadlines(db=db, user_id=user_id, user_tz_str=user_tz, days=days)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/tasks",
+                    params={"filter": "all"},
+                    label="Open Task Backlog",
+                )
+                return {"upcoming_deadlines": deadlines_list, "days": days}
+
+            elif fn_name == "get_overdue_tasks":
+                overdue_list = await get_overdue_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/tasks",
+                    params={"filter": "overdue"},
+                    label="View Overdue Tasks",
+                )
+                return {"overdue_tasks": overdue_list, "count": len(overdue_list)}
+
+            elif fn_name == "get_completed_tasks":
+                limit = int(fn_args.get("limit", 10))
+                comp_list = await get_completed_tasks(db=db, user_id=user_id, limit=limit)
+                return {"completed_tasks": comp_list, "count": len(comp_list)}
+
+            elif fn_name == "get_task_summary":
+                tool_output = await get_task_summary(db=db, user_id=user_id, user_tz_str=user_tz)
+                from app.services.copilot.accountability import StudentAccountabilityService
+                context_state["accountability_data"] = await StudentAccountabilityService.get_accountability_summary(
+                    db=db, user_id=user_id
+                )
+                return tool_output
+
+            elif fn_name == "get_today_calendar_events":
+                tool_output = await get_today_calendar_events(db=db, user_id=user_id, user_tz_str=user_tz)
+                target_d = tool_output.get("date", now_loc.date().isoformat())
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/calendar",
+                    params={"date": target_d, "view": "day"},
+                    label=f"Open Calendar for {target_d}",
+                )
+                return tool_output
+
+            elif fn_name == "get_calendar_events_for_date":
+                date_str = str(fn_args.get("date_str", now_loc.date().isoformat()))
+                tool_output = await get_calendar_events_for_date(db=db, user_id=user_id, date_str=date_str, user_tz_str=user_tz)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/calendar",
+                    params={"date": date_str, "view": "day"},
+                    label=f"Open Calendar for {date_str}",
+                )
+                return tool_output
+
+            elif fn_name == "get_upcoming_calendar_events":
+                days = int(fn_args.get("days", 7))
+                tool_output = await get_upcoming_calendar_events(db=db, user_id=user_id, user_tz_str=user_tz, days=days)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/calendar",
+                    params={"view": "week"},
+                    label="View Calendar Schedule",
+                )
+                return tool_output
+
+            elif fn_name == "get_calendar_event_details":
+                event_id = str(fn_args.get("event_id", ""))
+                return await get_calendar_event_details(db=db, user_id=user_id, event_id=event_id)
+
+            elif fn_name == "search_gmail_messages":
+                query = fn_args.get("query")
+                limit = int(fn_args.get("limit", 10))
+                tool_output = await search_gmail_messages(db=db, user_id=user_id, query=query, limit=limit)
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/gmail",
+                    params={},
+                    label="Open Gmail Inbox",
+                )
+                return tool_output
+
+            elif fn_name == "get_gmail_message":
+                message_id = str(fn_args.get("message_id", ""))
+                return await get_gmail_message(db=db, user_id=user_id, message_id=message_id)
+
+            elif fn_name == "get_gmail_thread":
+                thread_id = str(fn_args.get("thread_id", ""))
+                return await get_gmail_thread(db=db, user_id=user_id, thread_id=thread_id)
+
+            elif fn_name == "summarize_gmail_message":
+                message_id = str(fn_args.get("message_id", ""))
+                return await summarize_gmail_message(db=db, user_id=user_id, message_id=message_id)
+
+            elif fn_name == "prepare_gmail_reply":
+                target = str(fn_args.get("target_query_or_recipient", ""))
+                intent_desc = str(fn_args.get("reply_intent", ""))
+                tool_output = await prepare_gmail_reply_tool(
+                    db=db, user_id=user_id, target_query_or_recipient=target, reply_intent=intent_desc
+                )
+                approval_id = tool_output.get("approval_id")
+                context_state["approval_id"] = approval_id
+                context_state["email_draft"] = EmailDraftPreview(
+                    thread_id=tool_output.get("thread_id"),
+                    recipient_email=tool_output.get("recipient_email", ""),
+                    recipient_name=tool_output.get("recipient_name"),
+                    subject=tool_output.get("subject", ""),
+                    body=tool_output.get("body", ""),
+                    context_summary=tool_output.get("context_summary"),
+                    requires_confirmation=True,
+                    approval_id=approval_id,
+                    status=tool_output.get("status", "draft_ready"),
+                    clarification_question=tool_output.get("clarification_question"),
+                    candidates=tool_output.get("candidates"),
+                )
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/gmail",
+                    params={"thread_id": tool_output.get("thread_id") or ""},
+                    label="Open Thread in Gmail",
+                )
+                return tool_output
+
+            elif fn_name == "search_educational_resources":
+                q = str(fn_args.get("query", ""))
+                tool_output = search_educational_resources_tool(q)
+                found_res, _ = EducationalSearchService.search_educational_resources(q)
+                context_state["resources"] = found_res
+                return tool_output
+
+            elif fn_name == "get_student_accountability":
+                tool_output = await get_student_accountability_tool(db=db, user_id=user_id)
+                from app.services.copilot.accountability import StudentAccountabilityService
+                context_state["accountability_data"] = await StudentAccountabilityService.get_accountability_summary(
+                    db=db, user_id=user_id
+                )
+                return tool_output
+
+            else:
+                return {"error": f"Unknown tool: {fn_name}"}
+
+        except Exception as t_err:
+            logger.error("Tool execution failed", tool=fn_name, error=str(t_err))
+            return {"error": f"Tool execution failed: {t_err}"}
+
+    @classmethod
+    async def _process_message_gemini(
         cls,
         db: AsyncSession,
         user_id: uuid.UUID,
         req: CopilotMessageRequest,
+        user_tz: str,
+        now_loc: datetime,
+    ) -> CopilotResponse:
+        """Execute agent turn using Google Gemini Free-Tier API (gemini-3.8-flash) with function calling."""
+        current_time_str = now_loc.strftime("%A, %B %d, %Y at %I:%M %p")
+        system_content = cls.build_system_prompt(user_tz, current_time_str)
+        tools = cls.get_gemini_tools()
+        config = types.GenerateContentConfig(
+            system_instruction=system_content,
+            tools=tools,
+            temperature=0.3,
+        )
+
+        contents: list[types.Content] = []
+        for msg in req.conversation_history[-6:]:
+            role = "user" if msg.role == "user" else "model"
+            contents.append(
+                types.Content(
+                    role=role,
+                    parts=[types.Part.from_text(text=msg.content)],
+                )
+            )
+
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=req.message.strip())],
+            )
+        )
+
+        model_name = settings.GEMINI_MODEL or "gemini-3.8-flash"
+        client = cls.get_gemini_client()
+        if not client:
+            raise ValueError("Gemini client could not be initialized")
+
+        final_reply = ""
+        context_state: dict[str, Any] = {
+            "schedule_summary": None,
+            "resources": None,
+            "email_draft": None,
+            "navigation": None,
+            "accountability_data": None,
+            "approval_id": None,
+        }
+        tools_invoked: list[str] = []
+        tool_results_list: list[dict[str, Any]] = []
+        executed_signatures: set[str] = set()
+
+        for round_idx in range(MAX_TOOL_ROUNDS):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=config,
+                )
+            except (errors.APIError, errors.ClientError, errors.ServerError, Exception) as api_err:
+                logger.error("Gemini content generation failed", error=str(api_err))
+                from app.services.copilot.service import CopilotService
+
+                fallback_res = await CopilotService.process_message(db=db, user_id=user_id, req=req)
+                err_str = str(api_err)
+                is_quota = (
+                    "429" in err_str
+                    or "RESOURCE_EXHAUSTED" in err_str
+                    or "quota" in err_str.lower()
+                    or getattr(api_err, "code", None) == 429
+                )
+                if is_quota:
+                    prefix = (
+                        "> [!WARNING]\n"
+                        "> **Gemini Free-Tier Rate Limit Reached**: The free-tier request rate limit was temporarily reached. "
+                        "Mentor has retrieved your verified schedule and task intelligence directly from your database:\n\n"
+                    )
+                    spoken = "I reached the free-tier API rate limit, but I have retrieved your schedule and tasks."
+                    status_val = "verified"
+                else:
+                    prefix = (
+                        f"> [!WARNING]\n"
+                        f"> **AI Provider Notice**: ({err_str}). "
+                        "Here is your verified schedule intelligence:\n\n"
+                    )
+                    spoken = "I experienced a connection issue reaching the AI service, but I have retrieved your schedule."
+                    status_val = "error"
+
+                return CopilotResponse(
+                    reply=prefix + fallback_res.reply,
+                    spoken_reply=spoken,
+                    input_mode=req.input_mode,
+                    intent=fallback_res.intent,
+                    schedule_summary=fallback_res.schedule_summary,
+                    resources=fallback_res.resources,
+                    navigation=fallback_res.navigation,
+                    accountability=fallback_res.accountability,
+                    verification_status=status_val,
+                )
+
+            if not response.candidates or not response.candidates[0].content or not response.candidates[0].content.parts:
+                logger.warning("Gemini returned empty candidate content")
+                break
+
+            candidate = response.candidates[0]
+            candidate_content = candidate.content
+
+            # Check if there are function calls
+            function_calls = [
+                p.function_call for p in candidate_content.parts if p.function_call
+            ]
+
+            if not function_calls:
+                text_parts = [p.text for p in candidate_content.parts if p.text]
+                final_reply = "".join(text_parts)
+                break
+
+            # Append model turn containing function calls to contents
+            contents.append(candidate_content)
+
+            # Execute tool calls
+            response_parts: list[types.Part] = []
+            for fc in function_calls:
+                fn_name = fc.name
+                fn_args = dict(fc.args) if fc.args else {}
+
+                call_sig = f"{fn_name}:{json.dumps(fn_args, sort_keys=True)}"
+                if call_sig in executed_signatures:
+                    logger.warning("Duplicate Gemini tool invocation prevented", signature=call_sig)
+                    err_out = {"error": f"Tool '{fn_name}' was already invoked with identical arguments in this turn."}
+                    response_parts.append(
+                        types.Part.from_function_response(name=fn_name, response=err_out)
+                    )
+                    continue
+
+                executed_signatures.add(call_sig)
+                tools_invoked.append(fn_name)
+
+                tool_output = await cls._execute_single_tool(
+                    db=db,
+                    user_id=user_id,
+                    user_tz=user_tz,
+                    now_loc=now_loc,
+                    fn_name=fn_name,
+                    fn_args=fn_args,
+                    context_state=context_state,
+                )
+                tool_results_list.append({"tool": fn_name, "args": fn_args, "output": tool_output})
+                response_parts.append(
+                    types.Part.from_function_response(name=fn_name, response=tool_output)
+                )
+
+            contents.append(types.Content(role="user", parts=response_parts))
+
+        # Enforce 100-line limit per code example
+        bounded_reply, max_code_lines = enforce_code_line_limits(final_reply)
+
+        # Generate clean spoken version for TTS or browser speech
+        spoken_reply = cls._clean_text_for_speech(bounded_reply)
+
+        return CopilotResponse(
+            reply=bounded_reply,
+            spoken_reply=spoken_reply,
+            speech_audio_base64=None,
+            speech_audio_format="audio/mpeg",
+            input_mode=req.input_mode,
+            intent="gemini_agent",
+            tools_invoked=tools_invoked,
+            tool_results=tool_results_list,
+            schedule_summary=context_state["schedule_summary"],
+            resources=context_state["resources"],
+            email_draft=context_state["email_draft"],
+            approval_id=context_state["approval_id"],
+            navigation=context_state["navigation"],
+            accountability=context_state["accountability_data"],
+            code_line_count=max_code_lines,
+            verification_status="verified",
+        )
+
+    @classmethod
+    async def _process_message_openai(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        req: CopilotMessageRequest,
+        user_tz: str,
+        now_loc: datetime,
         preferred_voice: str = "nova",
     ) -> CopilotResponse:
-        """Execute single agent orchestration cycle for text or voice interactions."""
-        user_tz = await resolve_user_timezone(db, user_id, req.client_timezone)
-        try:
-            tz_obj = zoneinfo.ZoneInfo(user_tz)
-        except Exception:
-            tz_obj = zoneinfo.ZoneInfo("Asia/Dhaka")
-            user_tz = "Asia/Dhaka"
-
-        now_loc = datetime.now(UTC).astimezone(tz_obj)
-        current_time_str = now_loc.strftime("%A, %B %d, %Y at %I:%M %p")
-
+        """Execute agent turn using OpenAI Chat Completions API with tool calling."""
         client = cls.get_openai_client()
-
-        # If OpenAI is not configured, preserve deterministic fallback without crashing
         if not client:
-            logger.info("OpenAI API key not configured; using deterministic Phase 8 fallback", user_id=str(user_id))
-            from app.services.copilot.service import CopilotService
-            fallback_res = await CopilotService.process_message(db=db, user_id=user_id, req=req)
-            # Add honest setup message while preserving data
-            setup_note = (
-                "> [!NOTE]\n"
-                "> **OpenAI Agent Setup**: `OPENAI_API_KEY` is not yet configured on the backend. "
-                "Mentor is currently running in deterministic schedule mode. Set `OPENAI_API_KEY` in Render environment to enable full conversational agent intelligence.\n\n"
-            )
-            return CopilotResponse(
-                reply=setup_note + fallback_res.reply,
-                spoken_reply=fallback_res.reply,
-                input_mode=req.input_mode,
-                intent=fallback_res.intent,
-                schedule_summary=fallback_res.schedule_summary,
-                resources=fallback_res.resources,
-                email_draft=fallback_res.email_draft,
-                approval_id=fallback_res.email_draft.approval_id if fallback_res.email_draft else None,
-                navigation=fallback_res.navigation,
-                accountability=fallback_res.accountability,
-                code_line_count=fallback_res.code_line_count,
-                verification_status="unconfigured",
-            )
+            raise ValueError("OpenAI client could not be initialized")
 
-        # Build message history for OpenAI
+        current_time_str = now_loc.strftime("%A, %B %d, %Y at %I:%M %p")
         system_content = cls.build_system_prompt(user_tz, current_time_str)
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
 
-        # Include recent conversation context (last 6 messages)
         for msg in req.conversation_history[-6:]:
             messages.append({"role": msg.role, "content": msg.content})
 
         messages.append({"role": "user", "content": req.message.strip()})
 
-        # Structured state collected from tools
+        context_state: dict[str, Any] = {
+            "schedule_summary": None,
+            "resources": None,
+            "email_draft": None,
+            "navigation": None,
+            "accountability_data": None,
+            "approval_id": None,
+        }
         tools_invoked: list[str] = []
         tool_results_list: list[dict[str, Any]] = []
-        schedule_summary: CopilotScheduleSummary | None = None
-        resources: list[EducationalResource] | None = None
-        email_draft: EmailDraftPreview | None = None
-        navigation: CopilotNavigationTarget | None = None
-        accountability_data: StudentAccountabilitySummary | None = None
-        approval_id: str | None = None
-
         executed_signatures: set[str] = set()
 
-        # Function calling loop
         model_name = settings.OPENAI_MODEL or "gpt-4o-mini"
         final_reply = ""
 
@@ -472,7 +817,6 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                 )
             except Exception as api_err:
                 logger.error("OpenAI chat completion failed", error=str(api_err))
-                # Fall back to deterministic response on API failure
                 from app.services.copilot.service import CopilotService
                 fallback_res = await CopilotService.process_message(db=db, user_id=user_id, req=req)
                 return CopilotResponse(
@@ -491,15 +835,12 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             msg = choice.message
             tool_calls = msg.tool_calls or []
 
-            # If no tool calls, model gave final answer
             if not tool_calls:
                 final_reply = msg.content or ""
                 break
 
-            # Append assistant message with tool calls to history
             messages.append(msg.model_dump())
 
-            # Execute tool calls
             for tc in tool_calls:
                 fn_name = tc.function.name
                 fn_args_raw = tc.function.arguments or "{}"
@@ -508,10 +849,9 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                 except Exception:
                     fn_args = {}
 
-                # Loop prevention signature check
                 call_sig = f"{fn_name}:{json.dumps(fn_args, sort_keys=True)}"
                 if call_sig in executed_signatures:
-                    logger.warning("Duplicate tool invocation prevented", signature=call_sig)
+                    logger.warning("Duplicate OpenAI tool invocation prevented", signature=call_sig)
                     messages.append(
                         {
                             "role": "tool",
@@ -524,152 +864,15 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                 executed_signatures.add(call_sig)
                 tools_invoked.append(fn_name)
 
-                # Tool execution dispatcher with strict user isolation
-                tool_output: dict[str, Any] = {}
-                try:
-                    if fn_name == "get_today_tasks":
-                        tool_output = await get_today_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
-                        schedule_summary = await get_today_schedule(db=db, user_id=user_id, user_tz_str=user_tz)
-                        navigation = CopilotNavigationTarget(
-                            route="/tasks",
-                            params={"filter": "today"},
-                            label="View Today's Tasks",
-                        )
-
-                    elif fn_name == "get_task_details":
-                        task_id = str(fn_args.get("task_id", ""))
-                        tool_output = await get_task_details(db=db, user_id=user_id, task_id=task_id)
-
-                    elif fn_name == "get_upcoming_deadlines":
-                        days = int(fn_args.get("days", 7))
-                        deadlines_list = await get_upcoming_deadlines(db=db, user_id=user_id, user_tz_str=user_tz, days=days)
-                        tool_output = {"upcoming_deadlines": deadlines_list, "days": days}
-                        navigation = CopilotNavigationTarget(
-                            route="/tasks",
-                            params={"filter": "all"},
-                            label="Open Task Backlog",
-                        )
-
-                    elif fn_name == "get_overdue_tasks":
-                        overdue_list = await get_overdue_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
-                        tool_output = {"overdue_tasks": overdue_list, "count": len(overdue_list)}
-                        navigation = CopilotNavigationTarget(
-                            route="/tasks",
-                            params={"filter": "overdue"},
-                            label="View Overdue Tasks",
-                        )
-
-                    elif fn_name == "get_completed_tasks":
-                        limit = int(fn_args.get("limit", 10))
-                        comp_list = await get_completed_tasks(db=db, user_id=user_id, limit=limit)
-                        tool_output = {"completed_tasks": comp_list, "count": len(comp_list)}
-
-                    elif fn_name == "get_task_summary":
-                        tool_output = await get_task_summary(db=db, user_id=user_id, user_tz_str=user_tz)
-                        from app.services.copilot.accountability import StudentAccountabilityService
-                        accountability_data = await StudentAccountabilityService.get_accountability_summary(
-                            db=db, user_id=user_id
-                        )
-
-                    elif fn_name == "get_today_calendar_events":
-                        tool_output = await get_today_calendar_events(db=db, user_id=user_id, user_tz_str=user_tz)
-                        target_d = tool_output.get("date", now_loc.date().isoformat())
-                        navigation = CopilotNavigationTarget(
-                            route="/calendar",
-                            params={"date": target_d, "view": "day"},
-                            label=f"Open Calendar for {target_d}",
-                        )
-
-                    elif fn_name == "get_calendar_events_for_date":
-                        date_str = str(fn_args.get("date_str", now_loc.date().isoformat()))
-                        tool_output = await get_calendar_events_for_date(db=db, user_id=user_id, date_str=date_str, user_tz_str=user_tz)
-                        navigation = CopilotNavigationTarget(
-                            route="/calendar",
-                            params={"date": date_str, "view": "day"},
-                            label=f"Open Calendar for {date_str}",
-                        )
-
-                    elif fn_name == "get_upcoming_calendar_events":
-                        days = int(fn_args.get("days", 7))
-                        tool_output = await get_upcoming_calendar_events(db=db, user_id=user_id, user_tz_str=user_tz, days=days)
-                        navigation = CopilotNavigationTarget(
-                            route="/calendar",
-                            params={"view": "week"},
-                            label="View Calendar Schedule",
-                        )
-
-                    elif fn_name == "get_calendar_event_details":
-                        event_id = str(fn_args.get("event_id", ""))
-                        tool_output = await get_calendar_event_details(db=db, user_id=user_id, event_id=event_id)
-
-                    elif fn_name == "search_gmail_messages":
-                        query = fn_args.get("query")
-                        limit = int(fn_args.get("limit", 10))
-                        tool_output = await search_gmail_messages(db=db, user_id=user_id, query=query, limit=limit)
-                        navigation = CopilotNavigationTarget(
-                            route="/gmail",
-                            params={},
-                            label="Open Gmail Inbox",
-                        )
-
-                    elif fn_name == "get_gmail_message":
-                        message_id = str(fn_args.get("message_id", ""))
-                        tool_output = await get_gmail_message(db=db, user_id=user_id, message_id=message_id)
-
-                    elif fn_name == "get_gmail_thread":
-                        thread_id = str(fn_args.get("thread_id", ""))
-                        tool_output = await get_gmail_thread(db=db, user_id=user_id, thread_id=thread_id)
-
-                    elif fn_name == "summarize_gmail_message":
-                        message_id = str(fn_args.get("message_id", ""))
-                        tool_output = await summarize_gmail_message(db=db, user_id=user_id, message_id=message_id)
-
-                    elif fn_name == "prepare_gmail_reply":
-                        target = str(fn_args.get("target_query_or_recipient", ""))
-                        intent_desc = str(fn_args.get("reply_intent", ""))
-                        tool_output = await prepare_gmail_reply_tool(
-                            db=db, user_id=user_id, target_query_or_recipient=target, reply_intent=intent_desc
-                        )
-                        approval_id = tool_output.get("approval_id")
-                        email_draft = EmailDraftPreview(
-                            thread_id=tool_output.get("thread_id"),
-                            recipient_email=tool_output.get("recipient_email", ""),
-                            recipient_name=tool_output.get("recipient_name"),
-                            subject=tool_output.get("subject", ""),
-                            body=tool_output.get("body", ""),
-                            context_summary=tool_output.get("context_summary"),
-                            requires_confirmation=True,
-                            approval_id=approval_id,
-                            status=tool_output.get("status", "draft_ready"),
-                            clarification_question=tool_output.get("clarification_question"),
-                            candidates=tool_output.get("candidates"),
-                        )
-                        navigation = CopilotNavigationTarget(
-                            route="/gmail",
-                            params={"thread_id": tool_output.get("thread_id") or ""},
-                            label="Open Thread in Gmail",
-                        )
-
-                    elif fn_name == "search_educational_resources":
-                        q = str(fn_args.get("query", ""))
-                        tool_output = search_educational_resources_tool(q)
-                        found_res, _ = EducationalSearchService.search_educational_resources(q)
-                        resources = found_res
-
-                    elif fn_name == "get_student_accountability":
-                        tool_output = await get_student_accountability_tool(db=db, user_id=user_id)
-                        from app.services.copilot.accountability import StudentAccountabilityService
-                        accountability_data = await StudentAccountabilityService.get_accountability_summary(
-                            db=db, user_id=user_id
-                        )
-
-                    else:
-                        tool_output = {"error": f"Unknown tool: {fn_name}"}
-
-                except Exception as t_err:
-                    logger.error("Tool execution failed", tool=fn_name, error=str(t_err))
-                    tool_output = {"error": f"Tool execution failed: {t_err}"}
-
+                tool_output = await cls._execute_single_tool(
+                    db=db,
+                    user_id=user_id,
+                    user_tz=user_tz,
+                    now_loc=now_loc,
+                    fn_name=fn_name,
+                    fn_args=fn_args,
+                    context_state=context_state,
+                )
                 tool_results_list.append({"tool": fn_name, "args": fn_args, "output": tool_output})
 
                 messages.append(
@@ -680,13 +883,9 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                     }
                 )
 
-        # Enforce 100-line limit per code example
         bounded_reply, max_code_lines = enforce_code_line_limits(final_reply)
-
-        # Generate clean spoken version for TTS
         spoken_reply = cls._clean_text_for_speech(bounded_reply)
 
-        # If voice mode was requested, synthesize audio
         speech_audio_b64: str | None = None
         if req.input_mode == "voice" and client:
             voice_to_use = req.voice_preset or preferred_voice or settings.OPENAI_DEFAULT_VOICE or "nova"
@@ -705,14 +904,98 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             intent="openai_agent",
             tools_invoked=tools_invoked,
             tool_results=tool_results_list,
-            schedule_summary=schedule_summary,
-            resources=resources,
-            email_draft=email_draft,
-            approval_id=approval_id,
-            navigation=navigation,
-            accountability=accountability_data,
+            schedule_summary=context_state["schedule_summary"],
+            resources=context_state["resources"],
+            email_draft=context_state["email_draft"],
+            approval_id=context_state["approval_id"],
+            navigation=context_state["navigation"],
+            accountability=context_state["accountability_data"],
             code_line_count=max_code_lines,
             verification_status="verified",
+        )
+
+    @classmethod
+    async def process_message(
+        cls,
+        db: AsyncSession,
+        user_id: uuid.UUID,
+        req: CopilotMessageRequest,
+        preferred_voice: str = "nova",
+    ) -> CopilotResponse:
+        """Route message to active AI provider (Gemini or OpenAI) with graceful deterministic fallback."""
+        user_tz = await resolve_user_timezone(db, user_id, req.client_timezone)
+        try:
+            tz_obj = zoneinfo.ZoneInfo(user_tz)
+        except Exception:
+            tz_obj = zoneinfo.ZoneInfo("Asia/Dhaka")
+            user_tz = "Asia/Dhaka"
+
+        now_loc = datetime.now(UTC).astimezone(tz_obj)
+
+        active_provider = (settings.AI_PROVIDER or "gemini").lower().strip()
+
+        # Prioritize configured AI provider
+        if active_provider == "gemini" and settings.has_gemini_credentials:
+            return await cls._process_message_gemini(
+                db=db,
+                user_id=user_id,
+                req=req,
+                user_tz=user_tz,
+                now_loc=now_loc,
+            )
+
+        if active_provider == "openai" and settings.has_openai_credentials:
+            return await cls._process_message_openai(
+                db=db,
+                user_id=user_id,
+                req=req,
+                user_tz=user_tz,
+                now_loc=now_loc,
+                preferred_voice=preferred_voice,
+            )
+
+        # Fallback to whichever provider is credentialed
+        if settings.has_gemini_credentials:
+            return await cls._process_message_gemini(
+                db=db,
+                user_id=user_id,
+                req=req,
+                user_tz=user_tz,
+                now_loc=now_loc,
+            )
+
+        if settings.has_openai_credentials:
+            return await cls._process_message_openai(
+                db=db,
+                user_id=user_id,
+                req=req,
+                user_tz=user_tz,
+                now_loc=now_loc,
+                preferred_voice=preferred_voice,
+            )
+
+        # Neither provider is credentialed: fallback to deterministic Phase 8 service
+        logger.info("No AI credentials configured; using deterministic Phase 8 fallback", user_id=str(user_id))
+        from app.services.copilot.service import CopilotService
+        fallback_res = await CopilotService.process_message(db=db, user_id=user_id, req=req)
+        setup_note = (
+            "> [!NOTE]\n"
+            "> **AI Copilot Setup**: `GEMINI_API_KEY` (Free Tier) or `OPENAI_API_KEY` is not yet configured. "
+            "Mentor is currently running in deterministic schedule mode. Set `GEMINI_API_KEY` in Render environment to enable conversational intelligence.\n\n"
+        )
+        return CopilotResponse(
+            reply=setup_note + fallback_res.reply,
+            spoken_reply=fallback_res.reply,
+            input_mode=req.input_mode,
+            intent=fallback_res.intent,
+            schedule_summary=fallback_res.schedule_summary,
+            resources=fallback_res.resources,
+            email_draft=fallback_res.email_draft,
+            approval_id=fallback_res.email_draft.approval_id if fallback_res.email_draft else None,
+            navigation=fallback_res.navigation,
+            accountability=fallback_res.accountability,
+            code_line_count=fallback_res.code_line_count,
+            verification_status="unconfigured",
         )
 
     @classmethod

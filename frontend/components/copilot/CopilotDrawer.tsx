@@ -118,7 +118,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     {
       id: "initial-welcome",
       role: "assistant",
-      text: "Hello! I am Mentor, your OpenAI-powered educational copilot. Ask me about your tasks, today's schedule, Google Calendar events, recent Gmail messages, or academic concepts in English, Bangla, or Banglish.",
+      text: "Hello! I am Mentor, your AI educational copilot. Ask me about your tasks, today's schedule, Google Calendar events, recent Gmail messages, or academic concepts in English, Bangla, or Banglish.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -409,7 +409,17 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
               setErrorMessage("No clear speech recognized. Please try speaking again.");
             }
           } catch (transcribeErr: any) {
-            console.warn("Whisper transcription failed:", transcribeErr);
+            console.warn("Backend transcription unavailable, falling back to Web Speech API:", transcribeErr);
+            if (recognitionRef.current) {
+              setTranscriptNotice("Switched to free browser speech recognition. Speak your message:");
+              setOrbState("listening");
+              try {
+                recognitionRef.current.start();
+                return;
+              } catch (e) {
+                console.warn("Web Speech API fallback error:", e);
+              }
+            }
             setErrorMessage(transcribeErr?.message || "Speech transcription failed. Please try again.");
           }
           setOrbState("idle");
@@ -637,18 +647,18 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-white tracking-tight">Mentor AI Copilot</h2>
-                <span className="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-                  OpenAI
+                <span className="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+                  Gemini Free Tier
                 </span>
               </div>
               <p className="text-[10px] text-zinc-400 uppercase tracking-wider font-medium">
                 {orbState === "listening"
                   ? "Listening to voice..."
                   : orbState === "thinking"
-                  ? "OpenAI Agent executing tools..."
+                  ? "Gemini Agent executing tools..."
                   : orbState === "speaking"
                   ? "Speaking AI response..."
-                  : "Voice & Schedule Agent"}
+                  : "Voice & Schedule Copilot"}
               </p>
             </div>
           </div>
@@ -698,10 +708,10 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           <div className="border-b border-zinc-800 bg-zinc-900/90 p-4 animate-in slide-in-from-top-2 duration-150">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
-                Voice Preferences (OpenAI TTS)
+                Voice & Speech Preferences
               </h3>
               <span className="text-[10px] text-zinc-400">
-                Voice is AI-generated
+                Zero Cost Free Voice & AI Speech
               </span>
             </div>
 
@@ -709,10 +719,10 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-2.5 mb-3 text-[11px] text-zinc-300">
               <div className="flex items-center gap-1.5 font-medium text-indigo-300 mb-0.5">
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>Acoustic Profile Notice</span>
+                <span>Voice Profile & Free Tier Mode</span>
               </div>
               <p className="text-zinc-400 leading-normal">
-                Voice styles (masculine/feminine-sounding) represent synthetic acoustic characteristics, not human gender identities. All spoken audio is AI-generated using OpenAI Text-to-Speech.
+                Mentor uses free-tier Google Gemini for intelligence and supports zero-cost browser-native speech synthesis and voice recognition. Synthetic voice presets provide customizable acoustic playback.
               </p>
             </div>
 
@@ -809,9 +819,9 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             {orbState === "listening"
               ? "Listening... (Click orb or mic when done speaking)"
               : orbState === "speaking"
-              ? "Speaking with OpenAI Voice..."
+              ? "Speaking response..."
               : orbState === "thinking"
-              ? "OpenAI Agent executing tools & retrieving live data..."
+              ? "Gemini Agent executing tools & retrieving live data..."
               : "Click orb to speak (English/Bangla) or type below"}
           </p>
 

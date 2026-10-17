@@ -38,6 +38,12 @@ from app.schemas.copilot import (
 )
 from app.services.copilot_agent import CopilotAgent
 
+@pytest.fixture(autouse=True)
+def configure_openai_voice_provider():
+    """Ensure tests in this module route specifically to the OpenAI voice provider without network calls."""
+    with patch.object(settings, "AI_PROVIDER", "openai"), patch.object(settings, "GEMINI_API_KEY", ""):
+        yield
+
 
 @pytest.fixture
 async def test_session():
