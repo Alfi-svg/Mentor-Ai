@@ -402,14 +402,14 @@ export default function CalendarWorkspacePage() {
 
           <div className="flex flex-wrap items-center gap-2">
             {/* View Mode Switcher */}
-            <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-1">
+            <div className="inline-flex rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-1 backdrop-blur-md">
               {(["month", "week", "day"] as CalendarViewMode[]).map((mode) => (
                 <button
                   key={mode}
                   onClick={() => setViewMode(mode)}
-                  className={`rounded px-3 py-1 text-xs font-semibold capitalize transition-colors ${
+                  className={`rounded-lg px-3 py-1 text-xs font-semibold capitalize transition-all ${
                     viewMode === mode
-                      ? "bg-brand-600 text-white"
+                      ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
                       : "text-zinc-400 hover:text-white"
                   }`}
                 >
@@ -419,23 +419,23 @@ export default function CalendarWorkspacePage() {
             </div>
 
             {/* Date Nav Controls */}
-            <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900 p-0.5">
+            <div className="flex items-center rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-1 backdrop-blur-md">
               <button
                 onClick={handlePrev}
-                className="p-1 text-zinc-400 hover:text-white transition-colors"
+                className="p-1 text-zinc-400 hover:text-white transition-colors rounded-lg"
                 title="Previous"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
               <button
                 onClick={handleToday}
-                className="px-2 py-1 text-xs font-semibold text-zinc-300 hover:text-white transition-colors"
+                className="px-2.5 py-1 text-xs font-semibold text-zinc-300 hover:text-white transition-colors rounded-lg"
               >
                 Today
               </button>
               <button
                 onClick={handleNext}
-                className="p-1 text-zinc-400 hover:text-white transition-colors"
+                className="p-1 text-zinc-400 hover:text-white transition-colors rounded-lg"
                 title="Next"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -447,7 +447,7 @@ export default function CalendarWorkspacePage() {
               (status?.has_sufficient_scopes ?? true) && status?.status_label !== "insufficient_scopes" ? (
                 <button
                   onClick={() => setIsSettingsOpen(true)}
-                  className="hidden md:inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/20 transition-colors"
+                  className="hidden md:inline-flex items-center gap-1.5 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/20 transition-all backdrop-blur-md"
                   title="Google Calendar Connected - Click for Settings"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
@@ -457,7 +457,7 @@ export default function CalendarWorkspacePage() {
                 <button
                   onClick={handleConnect}
                   disabled={connecting}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-colors"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 hover:bg-amber-500/20 transition-all backdrop-blur-md"
                   title="Scopes missing - Click to Reconnect"
                 >
                   <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />
@@ -468,7 +468,7 @@ export default function CalendarWorkspacePage() {
               <button
                 onClick={handleConnect}
                 disabled={connecting}
-                className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/80 px-2.5 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors"
+                className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-700 hover:text-white transition-all backdrop-blur-md"
                 title="Connect Google Calendar"
               >
                 <Unlink className="h-3.5 w-3.5" />
@@ -479,7 +479,7 @@ export default function CalendarWorkspacePage() {
             {/* Settings Drawer Button */}
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-all backdrop-blur-md"
               title="Calendar Integration Settings & Availability"
             >
               <Settings className="h-3.5 w-3.5" />
@@ -490,17 +490,17 @@ export default function CalendarWorkspacePage() {
             <button
               onClick={handleSyncTasks}
               disabled={syncing}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-all backdrop-blur-md"
               title="Synchronize tasks and calendar"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${syncing ? "animate-spin text-indigo-400" : ""}`} />
               <span className="hidden sm:inline">Sync Tasks</span>
             </button>
 
             {/* New Event Button */}
             <button
               onClick={() => setIsCreateOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition-colors shadow-sm"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-all shadow-sm border border-indigo-400/30"
             >
               <Plus className="h-4 w-4" />
               <span>New Event</span>

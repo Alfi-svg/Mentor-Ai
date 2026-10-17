@@ -260,17 +260,17 @@ export default function PlannerPage() {
         </div>
 
         {/* Mode Selector Tabs */}
-        <div className="flex items-center gap-2 border-b border-zinc-800 pb-2">
+        <div className="flex items-center gap-2 border-b border-zinc-800/80 pb-3">
           <button
             onClick={() => {
               setPlannerMode("lifeops");
               setProposal(null);
               setConfirmResult(null);
             }}
-            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
+            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${
               plannerMode === "lifeops"
-                ? "bg-brand-600 text-white shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
+                : "bg-zinc-900/60 text-zinc-400 hover:text-white hover:bg-zinc-800 border border-zinc-800/60"
             }`}
           >
             <Compass className="h-4 w-4" />
@@ -281,10 +281,10 @@ export default function PlannerPage() {
               setPlannerMode("standard");
               setLifeopsResult(null);
             }}
-            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-xs font-semibold transition ${
+            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition-all ${
               plannerMode === "standard"
-                ? "bg-brand-600 text-white shadow-sm"
-                : "bg-zinc-900 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
+                : "bg-zinc-900/60 text-zinc-400 hover:text-white hover:bg-zinc-800 border border-zinc-800/60"
             }`}
           >
             <Calendar className="h-4 w-4" />
@@ -294,7 +294,7 @@ export default function PlannerPage() {
 
         {/* Global Error Notice */}
         {error && (
-          <div className="flex items-start gap-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-300">
+          <div className="flex items-start gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-300">
             <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400 mt-0.5" />
             <div className="space-y-1">
               <p className="font-semibold">Action Required</p>
@@ -304,11 +304,11 @@ export default function PlannerPage() {
         )}
 
         {/* Command Input Form with Voice Button */}
-        <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-6 space-y-5">
+        <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-6 space-y-5 backdrop-blur-md">
           <form onSubmit={plannerMode === "lifeops" ? handleExecuteLifeOps : handleGenerateDraft} className="space-y-4">
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label htmlFor="prompt" className="block text-xs font-medium uppercase tracking-wider text-zinc-300">
+                <label htmlFor="prompt" className="block text-xs font-semibold uppercase tracking-wider text-zinc-300">
                   {plannerMode === "lifeops" ? "LifeOps Goal & Command" : "Your Scheduling Instruction"}
                 </label>
                 <div className="flex items-center gap-2">
@@ -328,16 +328,16 @@ export default function PlannerPage() {
                     ? "Read my important emails, identify my upcoming assignments, prepare a study plan for tomorrow, and remind me before each deadline."
                     : "Plan my day tomorrow: 2 classes from 10am to 11:30am and 2pm to 3:30pm, team sync at 4pm, and 2 hours for compiler lab."
                 }
-                className="block w-full rounded-lg border border-zinc-700 bg-zinc-800/80 p-3 text-sm text-white placeholder-zinc-500 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 leading-relaxed font-sans"
+                className="block w-full rounded-xl border border-zinc-700/80 bg-zinc-950/80 p-3.5 text-sm text-white placeholder-zinc-500 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 leading-relaxed font-sans transition-all"
               />
-              <p className="text-[11px] text-zinc-500">
+              <p className="text-[11px] text-zinc-400">
                 You can speak naturally using the microphone icon above. Voice transcripts are editable before submission.
               </p>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label htmlFor="targetDate" className="block text-xs font-medium uppercase tracking-wider text-zinc-300">
+                <label htmlFor="targetDate" className="block text-xs font-semibold uppercase tracking-wider text-zinc-300">
                   Target Date
                 </label>
                 <input
@@ -346,14 +346,14 @@ export default function PlannerPage() {
                   required
                   value={targetDate}
                   onChange={(e) => setTargetDate(e.target.value)}
-                  className="mt-1 block w-full rounded-lg border border-zinc-700 bg-zinc-800/80 px-3 py-2 text-sm text-white shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                  className="mt-1 block w-full rounded-xl border border-zinc-700/80 bg-zinc-950/80 px-3.5 py-2.5 text-sm text-white shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium uppercase tracking-wider text-zinc-300">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-300">
                   Detected Timezone
                 </label>
-                <div className="mt-1 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-800/40 px-3 py-2 text-sm text-zinc-400">
+                <div className="mt-1 flex items-center gap-2 rounded-xl border border-zinc-800/80 bg-zinc-950/60 px-3.5 py-2.5 text-sm text-zinc-400">
                   <Clock className="h-4 w-4 text-zinc-500" />
                   <span className="font-mono text-xs">{clientTz}</span>
                 </div>
@@ -368,7 +368,7 @@ export default function PlannerPage() {
               <button
                 type="submit"
                 disabled={loading}
-                className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-xs font-semibold text-white shadow-md hover:bg-brand-500 disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white shadow-md hover:bg-indigo-500 disabled:opacity-50 transition-all border border-indigo-400/30"
               >
                 {loading ? (
                   <>

@@ -12,6 +12,8 @@ import {
   ShieldAlert,
   Sparkles,
   AlertTriangle,
+  Watch,
+  Plus,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { apiClient } from "@/lib/api-client";
@@ -103,47 +105,57 @@ export default function DashboardPage() {
   const completedTasks = safeTasks.filter((t) => t.status === "completed");
 
   const scheduleBlocks = Array.isArray(todaySchedule?.blocks) ? todaySchedule.blocks : [];
-  const nextCommitment = scheduleBlocks
-    .filter((b) => b && (b.block_type === "fixed_commitment" || b.block_type === "task_allocation"))
-    .sort((a, b) => {
-      const ta = a.start_time ? new Date(a.start_time).getTime() : 0;
-      const tb = b.start_time ? new Date(b.start_time).getTime() : 0;
-      return ta - tb;
-    })[0];
 
   return (
     <AppShell>
       <div className="space-y-8">
-        {/* Top Greeting & Date */}
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        {/* Top Header Banner */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-zinc-800/80 pb-5">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
               Workspace Overview
             </h1>
-            <p className="text-xs text-zinc-400" suppressHydrationWarning>
+            <p className="text-xs text-zinc-400 mt-1" suppressHydrationWarning>
               {mounted
                 ? `Today is ${new Date().toLocaleDateString(undefined, {
                     weekday: "long",
                     month: "short",
                     day: "numeric",
                     year: "numeric",
-                  })}. Deterministic engine active.`
-                : "Today's Productivity Workspace. Deterministic engine active."}
+                  })}. Deterministic scheduling active.`
+                : "Today's Productivity Workspace. Deterministic scheduling active."}
             </p>
           </div>
-          <button
-            onClick={loadDashboardData}
-            disabled={loading}
-            className="inline-flex items-center gap-2 self-start rounded-lg border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            <span>Refresh Data</span>
-          </button>
+          <div className="flex items-center gap-2.5">
+            <Link
+              href="/watch"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-all backdrop-blur-md"
+              title="Open smartwatch companion preview"
+            >
+              <Watch className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Watch Companion</span>
+            </Link>
+            <button
+              onClick={loadDashboardData}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-all backdrop-blur-md"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-indigo-400" : ""}`} />
+              <span>Refresh</span>
+            </button>
+            <Link
+              href="/tasks"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-all border border-indigo-400/30"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Add Task</span>
+            </Link>
+          </div>
         </div>
 
         {/* Error Alert */}
         {error && (
-          <div className="flex items-center justify-between rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+          <div className="flex items-center justify-between rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-300">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
               <span>{error}</span>
@@ -157,21 +169,21 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Quick Natural Language Command Callout */}
-        <div className="relative overflow-hidden rounded-xl border border-brand-500/20 bg-gradient-to-r from-brand-950/40 via-zinc-900/40 to-zinc-900/40 p-5 shadow-sm">
+        {/* Natural Language Planner Quick Callout */}
+        <div className="relative overflow-hidden rounded-2xl border border-indigo-500/20 bg-gradient-to-r from-indigo-950/40 via-zinc-900/50 to-zinc-900/40 p-5 shadow-sm backdrop-blur-md">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="space-y-1">
-              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-400">
+              <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400">
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>Natural-Language Planner</span>
+                <span>AI Natural-Language Planner</span>
               </div>
               <p className="text-sm font-medium text-zinc-200">
-                &ldquo;Mentor, plan my day tomorrow: 2 classes from 10am to 11:30am and 2pm to 3:30pm, team sync at 4pm, and 2 hours for my compiler lab.&rdquo;
+                &ldquo;Plan my day: 2 classes from 10am to 11:30am and 2pm to 3:30pm, team sync at 4pm, and 2 hours for compiler lab.&rdquo;
               </p>
             </div>
             <Link
               href="/planner"
-              className="inline-flex shrink-0 items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 transition-colors"
+              className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-all border border-indigo-400/30"
             >
               <span>Draft a Plan</span>
               <ArrowRight className="h-3.5 w-3.5" />
@@ -184,82 +196,88 @@ export default function DashboardPage() {
           {/* Card 1: Pending Tasks */}
           <Link
             href="/tasks"
-            className="group rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700 hover:bg-zinc-900/70"
+            className="group rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 transition-all hover:border-zinc-700 hover:bg-zinc-900/70 backdrop-blur-md shadow-sm"
           >
             <div className="flex items-center justify-between text-zinc-400">
               <span className="text-xs font-medium">Pending Tasks</span>
-              <ListTodo className="h-4 w-4 text-zinc-500 group-hover:text-brand-400 transition-colors" />
+              <div className="rounded-xl bg-zinc-800/80 p-2 text-zinc-400 group-hover:text-indigo-400 group-hover:bg-indigo-500/10 transition-colors">
+                <ListTodo className="h-4 w-4" />
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-white">
+            <div className="mt-3 flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white">
                 {loading ? "..." : pendingTasks.length}
               </span>
-              <span className="text-xs text-zinc-500">in backlog</span>
+              <span className="text-xs text-zinc-400">in backlog</span>
             </div>
           </Link>
 
           {/* Card 2: Today's Scheduled Blocks */}
           <Link
             href="/schedule"
-            className="group rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700 hover:bg-zinc-900/70"
+            className="group rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 transition-all hover:border-zinc-700 hover:bg-zinc-900/70 backdrop-blur-md shadow-sm"
           >
             <div className="flex items-center justify-between text-zinc-400">
               <span className="text-xs font-medium">Today&apos;s Schedule</span>
-              <Clock className="h-4 w-4 text-zinc-500 group-hover:text-brand-400 transition-colors" />
+              <div className="rounded-xl bg-zinc-800/80 p-2 text-zinc-400 group-hover:text-indigo-400 group-hover:bg-indigo-500/10 transition-colors">
+                <Clock className="h-4 w-4" />
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
-              <span className="text-2xl font-bold text-white">
+            <div className="mt-3 flex items-baseline gap-2">
+              <span className="text-3xl font-extrabold text-white">
                 {loading
                   ? "..."
                   : todaySchedule?.blocks?.length
                   ? todaySchedule.blocks.length
                   : "0"}
               </span>
-              <span className="text-xs text-zinc-500">
-                {todaySchedule ? "blocks persisted" : "not computed yet"}
+              <span className="text-xs text-zinc-400">
+                {todaySchedule ? "blocks computed" : "not computed"}
               </span>
             </div>
           </Link>
 
-          {/* Card 3: Pending Approvals */}
+          {/* Card 3: Action Approvals */}
           <Link
             href="/actions"
-            className="group rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700 hover:bg-zinc-900/70"
+            className="group rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 transition-all hover:border-zinc-700 hover:bg-zinc-900/70 backdrop-blur-md shadow-sm"
           >
             <div className="flex items-center justify-between text-zinc-400">
               <span className="text-xs font-medium">Action Approvals</span>
-              <ShieldAlert
-                className={`h-4 w-4 ${
-                  pendingActions.length > 0
-                    ? "text-amber-400 animate-pulse"
-                    : "text-zinc-500 group-hover:text-brand-400"
-                }`}
-              />
+              <div className={`rounded-xl p-2 transition-colors ${
+                pendingActions.length > 0
+                  ? "bg-amber-500/10 text-amber-400 animate-pulse"
+                  : "bg-zinc-800/80 text-zinc-400 group-hover:text-indigo-400"
+              }`}>
+                <ShieldAlert className="h-4 w-4" />
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
+            <div className="mt-3 flex items-baseline gap-2">
               <span
-                className={`text-2xl font-bold ${
+                className={`text-3xl font-extrabold ${
                   pendingActions.length > 0 ? "text-amber-400" : "text-white"
                 }`}
               >
                 {loading ? "..." : pendingActions.length}
               </span>
-              <span className="text-xs text-zinc-500">awaiting review</span>
+              <span className="text-xs text-zinc-400">awaiting review</span>
             </div>
           </Link>
 
           {/* Card 4: Calendar Connection */}
           <Link
             href="/settings/calendar"
-            className="group rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-4 transition-all hover:border-zinc-700 hover:bg-zinc-900/70"
+            className="group rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 transition-all hover:border-zinc-700 hover:bg-zinc-900/70 backdrop-blur-md shadow-sm"
           >
             <div className="flex items-center justify-between text-zinc-400">
               <span className="text-xs font-medium">Calendar Integration</span>
-              <Calendar className="h-4 w-4 text-zinc-500 group-hover:text-brand-400 transition-colors" />
+              <div className="rounded-xl bg-zinc-800/80 p-2 text-zinc-400 group-hover:text-indigo-400 group-hover:bg-indigo-500/10 transition-colors">
+                <Calendar className="h-4 w-4" />
+              </div>
             </div>
-            <div className="mt-2 flex items-baseline gap-2">
+            <div className="mt-3 flex items-baseline gap-2">
               <span
-                className={`text-sm font-semibold ${
+                className={`text-base font-bold ${
                   calendarStatus?.is_connected
                     ? "text-emerald-400"
                     : "text-zinc-400"
@@ -271,7 +289,7 @@ export default function DashboardPage() {
                   ? "Connected"
                   : "Disconnected"}
               </span>
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-zinc-400">
                 {calendarStatus?.provider || "google"}
               </span>
             </div>
@@ -281,17 +299,18 @@ export default function DashboardPage() {
         {/* Detailed Sections Grid */}
         <div className="grid gap-6 lg:grid-cols-2">
           {/* Section: Today's Timeline Preview */}
-          <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 space-y-4 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
               <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-brand-400" />
+                <Clock className="h-4 w-4 text-indigo-400" />
                 <h2 className="text-sm font-semibold text-white">Today&apos;s Schedule</h2>
               </div>
               <Link
                 href="/schedule"
-                className="text-xs font-medium text-brand-400 hover:text-brand-300"
+                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
               >
-                Full Timeline &rarr;
+                <span>Full Timeline</span>
+                <ArrowRight className="h-3 w-3" />
               </Link>
             </div>
 
@@ -302,21 +321,21 @@ export default function DashboardPage() {
                 {scheduleBlocks.slice(0, 5).map((block) => (
                   <div
                     key={block.id}
-                    className="flex items-center justify-between rounded-lg border border-zinc-800/60 bg-zinc-800/30 p-2.5 text-xs"
+                    className="flex items-center justify-between rounded-xl border border-zinc-800/60 bg-zinc-950/60 p-3 text-xs"
                   >
                     <div className="space-y-0.5">
-                      <p className="font-medium text-white">{block.title}</p>
+                      <p className="font-semibold text-white">{block.title}</p>
                       <p className="text-[11px] text-zinc-400 font-mono">
                         {safeFormatTime(block.start_time)} - {safeFormatTime(block.end_time)}
                       </p>
                     </div>
                     <span
-                      className={`rounded px-2 py-0.5 text-[10px] uppercase font-semibold ${
+                      className={`rounded-lg px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider ${
                         block.block_type === "fixed_commitment"
-                          ? "bg-purple-500/10 text-purple-400 border border-purple-500/20"
+                          ? "bg-purple-500/10 text-purple-300 border border-purple-500/30"
                           : block.block_type === "break"
-                          ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                          : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                          ? "bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                          : "bg-indigo-500/10 text-indigo-300 border border-indigo-500/30"
                       }`}
                     >
                       {safeBlockType(block.block_type)}
@@ -325,11 +344,12 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-zinc-800 p-8 text-center space-y-2">
-                <p className="text-xs text-zinc-400">No active schedule saved for today yet.</p>
+              <div className="rounded-xl border border-dashed border-zinc-800 p-8 text-center space-y-2.5">
+                <Clock className="mx-auto h-7 w-7 text-zinc-600" />
+                <p className="text-xs text-zinc-400 font-medium">No active schedule saved for today yet.</p>
                 <Link
                   href="/schedule"
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-400 hover:underline"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
                 >
                   <span>Compute Deterministic Schedule</span>
                   <ArrowRight className="h-3 w-3" />
@@ -339,17 +359,18 @@ export default function DashboardPage() {
           </div>
 
           {/* Section: Priority Backlog */}
-          <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-5 space-y-4 backdrop-blur-md">
+            <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
               <div className="flex items-center gap-2">
                 <ListTodo className="h-4 w-4 text-emerald-400" />
                 <h2 className="text-sm font-semibold text-white">High Priority Tasks</h2>
               </div>
               <Link
                 href="/tasks"
-                className="text-xs font-medium text-brand-400 hover:text-brand-300"
+                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
               >
-                View Backlog ({tasks.length}) &rarr;
+                <span>View Backlog ({tasks.length})</span>
+                <ArrowRight className="h-3 w-3" />
               </Link>
             </div>
 
@@ -360,10 +381,10 @@ export default function DashboardPage() {
                 {pendingTasks.slice(0, 5).map((task) => (
                   <div
                     key={task.id}
-                    className="flex items-center justify-between rounded-lg border border-zinc-800/60 bg-zinc-800/30 p-2.5 text-xs"
+                    className="flex items-center justify-between rounded-xl border border-zinc-800/60 bg-zinc-950/60 p-3 text-xs"
                   >
                     <div className="space-y-0.5">
-                      <p className="font-medium text-white">{task.title}</p>
+                      <p className="font-semibold text-white">{task.title}</p>
                       <p className="text-[11px] text-zinc-400">
                         {task.estimated_duration_minutes ?? task.duration_minutes ?? 45} mins
                         {task.deadline
@@ -372,12 +393,12 @@ export default function DashboardPage() {
                       </p>
                     </div>
                     <span
-                      className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                      className={`rounded-lg px-2 py-0.5 text-[10px] font-bold ${
                         task.priority === "P1"
                           ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                           : task.priority === "P2"
                           ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                          : "bg-zinc-800 text-zinc-400"
+                          : "bg-zinc-800 text-zinc-300"
                       }`}
                     >
                       {task.priority || "P3"}
@@ -386,14 +407,14 @@ export default function DashboardPage() {
                 ))}
               </div>
             ) : (
-              <div className="rounded-lg border border-dashed border-zinc-800 p-8 text-center space-y-2">
-                <CheckCircle2 className="mx-auto h-6 w-6 text-emerald-500" />
-                <p className="text-xs text-zinc-400">Backlog is empty or all tasks completed.</p>
+              <div className="rounded-xl border border-dashed border-zinc-800 p-8 text-center space-y-2.5">
+                <CheckCircle2 className="mx-auto h-7 w-7 text-emerald-500" />
+                <p className="text-xs text-zinc-400 font-medium">Backlog is clear! All scheduled tasks are done.</p>
                 <Link
                   href="/tasks"
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand-400 hover:underline"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
                 >
-                  <span>Add a Task</span>
+                  <span>Add New Task</span>
                   <ArrowRight className="h-3 w-3" />
                 </Link>
               </div>

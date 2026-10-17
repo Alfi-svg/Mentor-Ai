@@ -421,7 +421,7 @@ export default function TasksPage() {
 
           <button
             onClick={() => setCreateModalOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 transition-colors"
+            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-all border border-indigo-400/30"
           >
             <Plus className="h-4 w-4" />
             <span>New Task</span>
@@ -430,7 +430,7 @@ export default function TasksPage() {
 
         {/* Global Error Notice */}
         {error && (
-          <div className="flex items-center gap-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+          <div className="flex items-center gap-2.5 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3.5 text-xs text-rose-300">
             <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
             <span>{error}</span>
             <button
@@ -444,7 +444,7 @@ export default function TasksPage() {
 
         {/* Global Success Notice */}
         {successFeedback && (
-          <div className="flex items-center gap-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-300">
+          <div className="flex items-center gap-2.5 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-xs text-emerald-300">
             <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
             <span>{successFeedback}</span>
             <button
@@ -457,7 +457,7 @@ export default function TasksPage() {
         )}
 
         {/* Tabs Bar */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800 pb-2">
+        <div className="flex flex-wrap items-center gap-1.5 border-b border-zinc-800/80 pb-3">
           {(
             [
               { id: "active", label: "Active" },
@@ -471,10 +471,10 @@ export default function TasksPage() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`rounded-xl px-3.5 py-1.5 text-xs font-semibold transition-all ${
                 activeTab === tab.id
-                  ? "bg-brand-600 text-white shadow-sm"
-                  : "bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
+                  : "bg-zinc-900/60 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-zinc-800/60"
               }`}
             >
               {tab.label}
@@ -483,16 +483,16 @@ export default function TasksPage() {
         </div>
 
         {/* Filter and Search Controls */}
-        <div className="flex flex-col gap-3 rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-3.5 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-4 sm:flex-row sm:items-center backdrop-blur-md">
           {/* Search Input */}
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-zinc-500" />
+            <Search className="pointer-events-none absolute left-3.5 top-2.5 h-4 w-4 text-zinc-500" />
             <input
               type="text"
               placeholder="Search tasks by title, notes, or tags..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-800/70 py-1.5 pl-9 pr-3 text-xs text-white placeholder-zinc-500 focus:border-brand-500 focus:outline-none"
+              className="w-full rounded-xl border border-zinc-700/80 bg-zinc-950/70 py-2 pl-10 pr-3.5 text-xs text-white placeholder-zinc-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
             />
           </div>
 
@@ -502,7 +502,7 @@ export default function TasksPage() {
             <select
               value={priorityFilter}
               onChange={(e) => setPriorityFilter(e.target.value)}
-              className="rounded-lg border border-zinc-700 bg-zinc-800/70 px-2.5 py-1.5 text-xs text-zinc-300 focus:border-brand-500 focus:outline-none"
+              className="rounded-xl border border-zinc-700/80 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
             >
               <option value="all">All Priorities</option>
               <option value="P1">P1 (Urgent)</option>
@@ -514,7 +514,7 @@ export default function TasksPage() {
         </div>
 
         {/* Task Cards List */}
-        <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 divide-y divide-zinc-800/80 overflow-hidden">
+        <div className="rounded-2xl border border-zinc-800/80 bg-zinc-900/40 divide-y divide-zinc-800/80 overflow-hidden backdrop-blur-md">
           {loading ? (
             <div className="py-16 text-center text-xs text-zinc-500">
               <div className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-brand-500 border-t-transparent mb-2" />

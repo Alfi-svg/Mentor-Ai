@@ -138,10 +138,10 @@ export default function SchedulePage() {
 
           <div className="flex flex-wrap items-center gap-2">
             {/* Date Navigator */}
-            <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900/60 p-1">
+            <div className="flex items-center rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-1 backdrop-blur-md">
               <button
                 onClick={() => handleDateChange(-1)}
-                className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
                 title="Previous Day"
               >
                 <ChevronLeft className="h-4 w-4" />
@@ -154,7 +154,7 @@ export default function SchedulePage() {
               />
               <button
                 onClick={() => handleDateChange(1)}
-                className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-white"
+                className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white transition-colors"
                 title="Next Day"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -163,7 +163,7 @@ export default function SchedulePage() {
 
             <button
               onClick={() => setSelectedDate(new Date().toISOString().split("T")[0])}
-              className="rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white"
+              className="rounded-xl border border-zinc-800/80 bg-zinc-900/50 px-3 py-2 text-xs font-semibold text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors backdrop-blur-md"
             >
               Today
             </button>
@@ -172,7 +172,7 @@ export default function SchedulePage() {
             <button
               onClick={handleGenerateProposal}
               disabled={generating}
-              className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50 transition-all border border-indigo-400/30"
             >
               {generating ? (
                 <>
@@ -181,7 +181,7 @@ export default function SchedulePage() {
                 </>
               ) : (
                 <>
-                  <Zap className="h-3.5 w-3.5" />
+                  <Zap className="h-3.5 w-3.5 text-indigo-200" />
                   <span>Compute Schedule</span>
                 </>
               )}

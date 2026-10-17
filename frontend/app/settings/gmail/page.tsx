@@ -32,7 +32,7 @@ export default function GmailSettingsRedirectPage() {
         </div>
         <Link
           href="/gmail?settings=open"
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-xs font-medium text-white hover:bg-brand-500 transition-colors"
+          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 transition-all border border-indigo-400/30"
         >
           <RefreshCw className="h-3.5 w-3.5" />
           <span>Open Gmail Settings</span>

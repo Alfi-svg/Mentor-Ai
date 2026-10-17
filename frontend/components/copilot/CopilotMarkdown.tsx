@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Check, Copy, Code2, AlertCircle, Info, Sparkles } from "lucide-react";
+import { Check, Copy, Code2, AlertCircle, Info, Sparkles, Terminal } from "lucide-react";
 
 interface CopilotMarkdownProps {
   content: string;
@@ -60,10 +60,10 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
   const lineCount = code.split("\n").length;
 
   return (
-    <div className="my-3 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/90 shadow-md">
-      <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/80 px-3.5 py-1.5 text-xs text-zinc-400">
+    <div className="my-3 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/95 shadow-md">
+      <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-900/90 px-3.5 py-1.5 text-xs text-zinc-400">
         <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-zinc-300 uppercase tracking-wider">
-          <Code2 className="h-3.5 w-3.5 text-indigo-400" />
+          <Terminal className="h-3.5 w-3.5 text-indigo-400" />
           <span>{language || "code"}</span>
           <span className="text-[10px] text-zinc-500 font-normal">
             ({lineCount} {lineCount === 1 ? "line" : "lines"})
@@ -72,7 +72,7 @@ function CodeBlock({ code, language }: { code: string; language: string }) {
         <button
           type="button"
           onClick={handleCopy}
-          className="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          className="flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
           title="Copy code to clipboard"
         >
           {copied ? (
@@ -119,16 +119,16 @@ function renderInline(text: string): React.ReactNode[] {
       tokens.push(
         <code
           key={`code-${match.index}`}
-          className="rounded bg-zinc-800/80 px-1.5 py-0.5 font-mono text-[11px] sm:text-xs text-indigo-300 border border-zinc-700/50"
+          className="rounded-md bg-zinc-800/90 px-1.5 py-0.5 font-mono text-[11px] sm:text-xs text-indigo-300 border border-zinc-700/60 shadow-xs"
         >
           {code}
         </code>
       );
     } else if (token.startsWith("**") && token.endsWith("**")) {
-      // Bold
+      // Bold - high contrast readable white
       const boldText = token.slice(2, -2);
       tokens.push(
-        <strong key={`bold-${match.index}`} className="font-semibold text-white">
+        <strong key={`bold-${match.index}`} className="font-semibold text-white drop-shadow-xs">
           {renderInline(boldText)}
         </strong>
       );
@@ -178,7 +178,7 @@ function renderInline(text: string): React.ReactNode[] {
 }
 
 /**
- * ChatGPT-Style Structured Markdown Renderer for Copilot Responses.
+ * ChatGPT-Style Structured Markdown Renderer with Colorful Hierarchy for Copilot Responses.
  */
 export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProps) {
   if (!content) return null;
@@ -200,8 +200,8 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
     const ListTag = type === "ol" ? "ol" : "ul";
     const listClasses =
       type === "ol"
-        ? "list-decimal list-outside pl-5 space-y-1 my-2 text-zinc-200 text-xs sm:text-sm"
-        : "list-disc list-outside pl-5 space-y-1 my-2 text-zinc-200 text-xs sm:text-sm";
+        ? "list-decimal list-outside pl-5 space-y-1.5 my-2.5 text-zinc-200 text-xs sm:text-sm"
+        : "list-disc list-outside pl-5 space-y-1.5 my-2.5 text-zinc-200 text-xs sm:text-sm marker:text-indigo-400";
 
     elements.push(
       <ListTag key={`list-${elements.length}`} className={listClasses}>
@@ -235,11 +235,11 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
       elements.push(
         <div
           key={`table-${elements.length}`}
-          className="my-3 overflow-x-auto rounded-lg border border-zinc-800 bg-zinc-950/60 shadow-sm"
+          className="my-3 overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-950/70 shadow-sm"
         >
           <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="border-b border-zinc-800 bg-zinc-900/90 text-zinc-200">
+              <tr className="border-b border-zinc-800 bg-zinc-900/90 text-indigo-200">
                 {headerRow.map((h, i) => (
                   <th key={i} className="p-2.5 font-semibold tracking-wider">
                     {renderInline(h)}
@@ -308,13 +308,13 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
       flushTable();
     }
 
-    // 3. Headings (#, ##, ###, ####)
+    // 3. Headings with Colorful Hierarchy (#, ##, ###, ####)
     if (trimmed.startsWith("# ")) {
       flushList();
       elements.push(
         <h1
           key={`h1-${elements.length}`}
-          className="text-base sm:text-lg font-bold text-white mt-3.5 mb-1.5 border-b border-zinc-800 pb-1 tracking-tight"
+          className="text-base sm:text-lg font-bold text-indigo-300 mt-4 mb-2 border-b border-indigo-500/20 pb-1 tracking-tight flex items-center gap-2"
         >
           {renderInline(trimmed.slice(2))}
         </h1>
@@ -326,7 +326,7 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
       elements.push(
         <h2
           key={`h2-${elements.length}`}
-          className="text-sm sm:text-base font-semibold text-zinc-100 mt-3 mb-1 tracking-tight"
+          className="text-sm sm:text-base font-semibold text-sky-300 mt-3.5 mb-1.5 tracking-tight"
         >
           {renderInline(trimmed.slice(3))}
         </h2>
@@ -338,7 +338,7 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
       elements.push(
         <h3
           key={`h3-${elements.length}`}
-          className="text-xs sm:text-sm font-semibold text-indigo-300 mt-2.5 mb-1 tracking-tight"
+          className="text-xs sm:text-sm font-semibold text-violet-300 mt-3 mb-1 tracking-tight"
         >
           {renderInline(trimmed.slice(4))}
         </h3>
@@ -350,7 +350,7 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
       elements.push(
         <h4
           key={`h4-${elements.length}`}
-          className="text-xs font-semibold text-zinc-300 mt-2 mb-0.5 uppercase tracking-wider"
+          className="text-xs font-semibold text-zinc-300 mt-2.5 mb-1 uppercase tracking-wider"
         >
           {renderInline(trimmed.slice(5))}
         </h4>
@@ -387,7 +387,7 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
         elements.push(
           <div
             key={`alert-${elements.length}`}
-            className={`my-2.5 rounded-lg border p-3 text-xs leading-relaxed flex items-start gap-2.5 ${borderColor}`}
+            className={`my-2.5 rounded-xl border p-3 text-xs leading-relaxed flex items-start gap-2.5 ${borderColor}`}
           >
             <AlertIcon className="h-4 w-4 shrink-0 mt-0.5" />
             <div className="flex-1">{renderInline(cleanedText)}</div>
@@ -397,7 +397,7 @@ export function CopilotMarkdown({ content, className = "" }: CopilotMarkdownProp
         elements.push(
           <blockquote
             key={`quote-${elements.length}`}
-            className="my-2 border-l-2 border-indigo-500/60 pl-3 italic text-zinc-400 text-xs sm:text-sm"
+            className="my-2 border-l-2 border-indigo-500/60 pl-3.5 italic text-zinc-400 text-xs sm:text-sm"
           >
             {renderInline(quoteBody)}
           </blockquote>

@@ -445,7 +445,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           } catch (transcribeErr: any) {
             console.warn("Backend transcription unavailable, falling back to Web Speech API:", transcribeErr);
             if (recognitionRef.current) {
-              setTranscriptNotice("Switched to free browser speech recognition. Speak your message:");
+              setTranscriptNotice("Switched to browser speech recognition. Speak your message:");
               setOrbState("listening");
               try {
                 recognitionRef.current.start();
@@ -692,8 +692,8 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold text-white tracking-tight">Mentor AI Copilot</h2>
-                <span className="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-                  Gemini Free Tier
+                <span className="text-[9px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
+                  Live
                 </span>
               </div>
               <p className="text-[10px] text-zinc-400 uppercase tracking-wider font-medium">
@@ -799,18 +799,18 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                 Voice & Speech Preferences
               </h3>
               <span className="text-[10px] text-zinc-400">
-                Zero Cost Free Voice & AI Speech
+                Voice & Acoustic Settings
               </span>
             </div>
 
             {/* Acoustic Profile & Safety Disclaimer */}
-            <div className="rounded-lg bg-indigo-500/10 border border-indigo-500/20 p-2.5 mb-3 text-[11px] text-zinc-300">
+            <div className="rounded-xl bg-indigo-500/10 border border-indigo-500/20 p-2.5 mb-3 text-[11px] text-zinc-300">
               <div className="flex items-center gap-1.5 font-medium text-indigo-300 mb-0.5">
                 <Sparkles className="h-3.5 w-3.5" />
-                <span>Voice Profile & Free Tier Mode</span>
+                <span>Acoustic Profile & Synthesis</span>
               </div>
               <p className="text-zinc-400 leading-normal">
-                Mentor uses free-tier Google Gemini for intelligence and supports zero-cost browser-native speech synthesis and voice recognition. Synthetic voice presets provide customizable acoustic playback.
+                Mentor AI uses speech recognition and high-fidelity speech synthesis. Select an acoustic profile below to customize voice responses.
               </p>
             </div>
 
@@ -1158,7 +1158,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                   <div className="mt-3 pt-2 border-t border-zinc-800/60 flex items-center justify-between text-[11px] text-zinc-400">
                     <span className="inline-flex items-center gap-1 text-[10px] text-zinc-500 uppercase font-semibold tracking-wider">
                       <Sparkles className="h-3 w-3 text-indigo-400" />
-                      Gemini Copilot
+                      Mentor Copilot
                     </span>
                     <div className="flex items-center gap-3">
                       <button

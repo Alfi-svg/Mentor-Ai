@@ -632,7 +632,7 @@ export default function PreferencesSettingsPage() {
               <button
                 type="submit"
                 disabled={saving}
-                className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-brand-500 disabled:opacity-50 transition-colors"
+                className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:opacity-50 transition-all border border-indigo-400/30"
               >
                 <Save className="h-4 w-4" />
                 <span>{saving ? "Saving Changes..." : "Save Preferences"}</span>

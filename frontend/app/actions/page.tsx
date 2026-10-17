@@ -127,12 +127,12 @@ export default function ActionsPage() {
           </div>
 
           {/* Tab Selector */}
-          <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900/60 p-1">
+          <div className="flex items-center rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-1 backdrop-blur-md">
             <button
               onClick={() => setActiveTab("pending")}
-              className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
                 activeTab === "pending"
-                  ? "bg-brand-600 text-white shadow-sm"
+                  ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
                   : "text-zinc-400 hover:text-white"
               }`}
             >
@@ -141,9 +141,9 @@ export default function ActionsPage() {
             </button>
             <button
               onClick={() => setActiveTab("history")}
-              className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition-all ${
                 activeTab === "history"
-                  ? "bg-brand-600 text-white shadow-sm"
+                  ? "bg-indigo-600 text-white shadow-sm border border-indigo-400/30"
                   : "text-zinc-400 hover:text-white"
               }`}
             >

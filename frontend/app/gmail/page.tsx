@@ -497,7 +497,7 @@ export default function GmailWorkspacePage() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-all backdrop-blur-md"
               title="Gmail Integration Settings"
             >
               <Settings className="h-3.5 w-3.5" />
@@ -505,7 +505,7 @@ export default function GmailWorkspacePage() {
             </button>
             <button
               onClick={() => setIsComposeOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition-colors shadow-sm"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-all shadow-sm border border-indigo-400/30"
             >
               <PenSquare className="h-4 w-4" />
               <span>Compose</span>
@@ -513,10 +513,10 @@ export default function GmailWorkspacePage() {
             <button
               onClick={loadMessages}
               disabled={loadingList}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-white hover:bg-zinc-700 disabled:opacity-50 transition-all backdrop-blur-md"
               title="Refresh messages"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loadingList ? "animate-spin" : ""}`} />
+              <RefreshCw className={`h-3.5 w-3.5 ${loadingList ? "animate-spin text-indigo-400" : ""}`} />
             </button>
           </div>
         </div>
