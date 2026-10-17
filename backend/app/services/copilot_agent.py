@@ -5,6 +5,7 @@ secure task/calendar/Gmail access with strict user isolation, 100-line code enfo
 safe email draft confirmation gates, Whisper STT, and TTS audio synthesis.
 """
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -999,36 +1000,65 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
         )
 
     @classmethod
-    async def transcribe_audio(cls, file_bytes: bytes, filename: str = "recording.webm") -> CopilotTranscribeResponse:
-        """Transcribe speech audio file using OpenAI Whisper STT model."""
-        client = cls.get_openai_client()
+    async def transcribe_audio(
+        cls, file_bytes: bytes, filename: str = "recording.webm", content_type: str | None = None
+    ) -> CopilotTranscribeResponse:
+        """Transcribe speech audio using Google Gemini multimodal audio transcription."""
+        client = cls.get_gemini_client()
         if not client:
-            raise ValueError("OpenAI API key is not configured. Speech transcription requires OPENAI_API_KEY.")
+            raise ValueError("Gemini API key is not configured. Speech transcription requires GEMINI_API_KEY.")
 
-        buffer = io.BytesIO(file_bytes)
-        buffer.name = filename
+        mime_map = {
+            ".webm": "audio/webm",
+            ".wav": "audio/wav",
+            ".mp3": "audio/mp3",
+            ".m4a": "audio/m4a",
+            ".mp4": "audio/mp4",
+            ".ogg": "audio/ogg",
+            ".oga": "audio/ogg",
+            ".flac": "audio/flac",
+            ".aac": "audio/aac",
+        }
+        ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".webm"
+        detected_mime = content_type or mime_map.get(ext, "audio/webm")
+        if detected_mime == "audio/x-m4a":
+            detected_mime = "audio/m4a"
 
-        stt_model = settings.OPENAI_STT_MODEL or "whisper-1"
+        audio_part = types.Part.from_bytes(data=file_bytes, mime_type=detected_mime)
+        prompt = (
+            "Transcribe the spoken audio verbatim. "
+            "Accurately capture Bangla, English, or mixed Banglish speech. "
+            "Do not summarize, paraphrase, or answer the speech. "
+            "Do not add introductory or concluding remarks (e.g. do not say 'Here is the transcript:'). "
+            "Output only the exact transcribed speech text."
+        )
+
+        model_name = settings.GEMINI_MODEL or "gemini-3.8-flash"
         try:
-            transcript_obj = await client.audio.transcriptions.create(
-                model=stt_model,
-                file=buffer,
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=[audio_part, prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                ),
             )
+            raw_transcript = (response.text or "").strip()
+            if (raw_transcript.startswith('"') and raw_transcript.endswith('"')) or (
+                raw_transcript.startswith("'") and raw_transcript.endswith("'")
+            ):
+                raw_transcript = raw_transcript[1:-1].strip()
+
             return CopilotTranscribeResponse(
-                transcript=transcript_obj.text.strip(),
-                language=getattr(transcript_obj, "language", None),
+                transcript=raw_transcript,
+                language=None,
             )
-        except (
-            APIConnectionError,
-            APITimeoutError,
-            AuthenticationError,
-            BadRequestError,
-            RateLimitError,
-        ) as api_err:
-            logger.error("OpenAI Whisper STT API error", error=str(api_err), model=stt_model)
+        except (errors.APIError, errors.ClientError, errors.ServerError) as api_err:
+            logger.error("Gemini audio transcription API error", error=str(api_err), model=model_name)
+            raise
+        except (TimeoutError, asyncio.TimeoutError):
             raise
         except Exception as exc:
-            logger.error("Whisper transcription failed", error=str(exc))
+            logger.error("Gemini audio transcription failed", error=str(exc))
             raise RuntimeError(f"Speech transcription failed: {exc}") from exc
 
     @classmethod

@@ -112,15 +112,14 @@ async def test_transcribe_audio_success(test_session: AsyncSession, test_user: A
     app.dependency_overrides[get_current_user] = lambda: test_user
 
     dummy_audio = b"\x1aE\xdf\xa3" + b"A" * 200  # Valid dummy webm header + payload
-    mock_transcript = MagicMock()
-    mock_transcript.text = "Ajke amar ki task ache?"
-    mock_transcript.language = "bn"
+    mock_response = MagicMock()
+    mock_response.text = "Ajke amar ki task ache?"
 
-    mock_client = AsyncMock()
-    mock_client.audio.transcriptions.create.return_value = mock_transcript
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
     try:
-        with patch.object(CopilotAgent, "get_openai_client", return_value=mock_client):
+        with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 files = {"file": ("speech.webm", dummy_audio, "audio/webm")}
                 res = await ac.post("/api/v1/copilot/transcribe", files=files)
@@ -128,7 +127,6 @@ async def test_transcribe_audio_success(test_session: AsyncSession, test_user: A
                 assert res.status_code == 200
                 data = res.json()
                 assert data["transcript"] == "Ajke amar ki task ache?"
-                assert data["language"] == "bn"
     finally:
         app.dependency_overrides.clear()
 
@@ -200,20 +198,19 @@ async def test_transcribe_audio_unsupported_mime(test_session: AsyncSession, tes
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_provider_rate_limit(test_session: AsyncSession, test_user: AuthenticatedUser):
-    """OpenAI RateLimitError maps to HTTP 429 Too Many Requests."""
+    """Gemini 429 rate limit maps to HTTP 429 Too Many Requests."""
     app.dependency_overrides[get_db] = lambda: test_session
     app.dependency_overrides[get_current_user] = lambda: test_user
 
     dummy_audio = b"\x1aE\xdf\xa3" + b"A" * 200
-    mock_client = AsyncMock()
-    mock_resp = MagicMock()
-    mock_resp.status_code = 429
-    mock_client.audio.transcriptions.create.side_effect = RateLimitError(
-        message="Rate limit reached", response=mock_resp, body=None
+    from google.genai.errors import APIError
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(
+        side_effect=APIError(code=429, response_json={"error": {"message": "Rate limit reached"}})
     )
 
     try:
-        with patch.object(CopilotAgent, "get_openai_client", return_value=mock_client):
+        with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 files = {"file": ("speech.webm", dummy_audio, "audio/webm")}
                 res = await ac.post("/api/v1/copilot/transcribe", files=files)
@@ -225,17 +222,16 @@ async def test_transcribe_audio_provider_rate_limit(test_session: AsyncSession, 
 
 @pytest.mark.asyncio
 async def test_transcribe_audio_provider_timeout(test_session: AsyncSession, test_user: AuthenticatedUser):
-    """OpenAI APITimeoutError maps to HTTP 504 Gateway Timeout."""
+    """TimeoutError maps to HTTP 504 Gateway Timeout."""
     app.dependency_overrides[get_db] = lambda: test_session
     app.dependency_overrides[get_current_user] = lambda: test_user
 
     dummy_audio = b"\x1aE\xdf\xa3" + b"A" * 200
-    mock_client = AsyncMock()
-    mock_req = MagicMock()
-    mock_client.audio.transcriptions.create.side_effect = APITimeoutError(request=mock_req)
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(side_effect=TimeoutError("Request timed out"))
 
     try:
-        with patch.object(CopilotAgent, "get_openai_client", return_value=mock_client):
+        with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
                 files = {"file": ("speech.webm", dummy_audio, "audio/webm")}
                 res = await ac.post("/api/v1/copilot/transcribe", files=files)

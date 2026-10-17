@@ -23,8 +23,11 @@ import {
   Volume2,
   VolumeX,
   X,
+  Copy,
+  MessageSquare,
 } from "lucide-react";
 import { CopilotVoiceOrb, OrbState } from "./CopilotVoiceOrb";
+import { CopilotMarkdown } from "./CopilotMarkdown";
 import { apiClient } from "@/lib/api-client";
 import {
   CopilotMessageRequest,
@@ -93,6 +96,10 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Interaction Mode: "text" (silent, typed, Markdown) vs "voice" (spoken, Gemini STT & TTS)
+  const [interactionMode, setInteractionMode] = useState<"text" | "voice">("text");
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
   // Settings & Voice Preferences
   const [showSettings, setShowSettings] = useState(false);
   const [selectedVoice, setSelectedVoice] = useState<string>("nova");
@@ -106,7 +113,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
   const [emailSending, setEmailSending] = useState(false);
   const [emailSentResult, setEmailSentResult] = useState<string | null>(null);
 
-  // Recording via MediaRecorder (for Whisper STT)
+  // Recording via MediaRecorder (for Gemini multimodal audio STT)
   const [isRecordingMedia, setIsRecordingMedia] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -271,6 +278,32 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     setPreviewingVoiceId(null);
   };
 
+  const handleSwitchMode = (mode: "text" | "voice") => {
+    stopSpeaking();
+    setInteractionMode(mode);
+    setErrorMessage(null);
+    if (mode === "text") {
+      setTranscriptNotice(null);
+    }
+  };
+
+  const copyFullMessage = async (msgId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedMessageId(msgId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopiedMessageId(msgId);
+      setTimeout(() => setCopiedMessageId(null), 2000);
+    }
+  };
+
   const playSynthesizedAudio = (base64Audio: string, mimeType = "audio/mpeg") => {
     if (isVoiceMuted) return;
     stopSpeaking();
@@ -340,7 +373,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     synthRef.current.speak(utterance);
   };
 
-  // Toggle voice recording (Whisper MediaRecorder preferred, Web Speech API fallback)
+  // Toggle voice recording (Gemini MediaRecorder multimodal STT preferred, Web Speech API fallback)
   const toggleListening = async () => {
     if (orbState === "listening" || isRecordingMedia) {
       // Stop recording
@@ -361,9 +394,10 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
     stopSpeaking();
     setErrorMessage(null);
+    setInteractionMode("voice");
     setOrbState("listening");
 
-    // Try MediaRecorder for Whisper STT
+    // Try MediaRecorder for Gemini multimodal audio STT
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -396,7 +430,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
               setInputText(spokenWords);
               if (reviewBeforeSend) {
                 setOrbState("idle");
-                setTranscriptNotice("Transcript captured! Review and edit your prompt below, then press Enter or Send.");
+                setTranscriptNotice("Transcript captured via Gemini! Review and edit your prompt below, then press Enter or Send.");
                 setTimeout(() => {
                   textInputRef.current?.focus();
                 }, 50);
@@ -447,9 +481,13 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     setErrorMessage("Could not access microphone. Please ensure microphone permissions are granted.");
   };
 
-  const handleSend = async (messageToSend?: string, wasSpoken: boolean = false) => {
+  const handleSend = async (messageToSend?: string, wasSpoken?: boolean) => {
     const text = (messageToSend || inputText).trim();
     if (!text || loading) return;
+
+    // Determine if this turn should trigger spoken output
+    // If wasSpoken is explicitly provided, respect it; otherwise respect interactionMode
+    const isVoiceTurn = wasSpoken !== undefined ? wasSpoken : interactionMode === "voice";
 
     stopSpeaking();
     setTranscriptNotice(null);
@@ -475,7 +513,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
       const payload: CopilotMessageRequest = {
         message: text,
         client_timezone: clientTz,
-        input_mode: wasSpoken ? "voice" : "text",
+        input_mode: isVoiceTurn ? "voice" : "text",
         voice_preset: selectedVoice,
       };
 
@@ -491,11 +529,18 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
       setMessages((prev) => [...prev, assistantEntry]);
 
-      // If speech audio was returned from OpenAI TTS, play it
-      if ((wasSpoken || !isVoiceMuted) && response.speech_audio_base64) {
-        playSynthesizedAudio(response.speech_audio_base64, response.speech_audio_format || "audio/mpeg");
-      } else if (wasSpoken || !isVoiceMuted) {
-        speakTextFallback(response.spoken_reply || response.reply);
+      // Phase 4 fix: Only play audio if this turn was initiated in voice mode AND user has not muted voice.
+      // Text mode is completely silent (no audio playback, no background TTS).
+      const shouldSpeak = isVoiceTurn && !isVoiceMuted;
+      if (shouldSpeak) {
+        if (response.speech_audio_base64) {
+          playSynthesizedAudio(
+            response.speech_audio_base64,
+            response.speech_audio_format || "audio/mpeg"
+          );
+        } else {
+          speakTextFallback(response.spoken_reply || response.reply);
+        }
       } else {
         setOrbState("idle");
       }
@@ -703,6 +748,49 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           </div>
         </header>
 
+        {/* Interaction Mode Switcher Bar (Phase 3: Text vs Voice Mode) */}
+        <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/60 px-6 py-2.5">
+          <div className="flex items-center gap-1 rounded-lg bg-zinc-950 p-1 border border-zinc-800">
+            <button
+              type="button"
+              onClick={() => handleSwitchMode("text")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all ${
+                interactionMode === "text"
+                  ? "bg-indigo-600 text-white shadow-sm font-semibold"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              <span>Text Mode</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSwitchMode("voice")}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-all ${
+                interactionMode === "voice"
+                  ? "bg-indigo-600 text-white shadow-sm font-semibold"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <Mic className="h-3.5 w-3.5" />
+              <span>Voice Mode</span>
+            </button>
+          </div>
+          <span className="text-[11px]">
+            {interactionMode === "text" ? (
+              <span className="text-zinc-400 flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-zinc-500" />
+                Silent Markdown replies
+              </span>
+            ) : (
+              <span className="text-indigo-300 font-medium flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Speaks replies aloud
+              </span>
+            )}
+          </span>
+        </div>
+
         {/* Voice Preferences Drawer Panel */}
         {showSettings && (
           <div className="border-b border-zinc-800 bg-zinc-900/90 p-4 animate-in slide-in-from-top-2 duration-150">
@@ -886,8 +974,12 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                   </div>
                 )}
 
-                {/* Natural Response Text */}
-                <div className="whitespace-pre-wrap">{msg.text}</div>
+                {/* Natural Response Text with ChatGPT-style Markdown */}
+                {msg.role === "assistant" ? (
+                  <CopilotMarkdown content={msg.text} />
+                ) : (
+                  <div className="whitespace-pre-wrap">{msg.text}</div>
+                )}
 
                 {/* 1. Schedule & Task Card */}
                 {msg.response?.schedule_summary && (
@@ -1061,31 +1153,52 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                     </div>
                   </div>
                 )}
-                {/* Voice Replay Action */}
+                {/* Assistant Message Actions: Copy Response & Listen */}
                 {msg.role === "assistant" && (
                   <div className="mt-3 pt-2 border-t border-zinc-800/60 flex items-center justify-between text-[11px] text-zinc-400">
                     <span className="inline-flex items-center gap-1 text-[10px] text-zinc-500 uppercase font-semibold tracking-wider">
                       <Sparkles className="h-3 w-3 text-indigo-400" />
-                      AI Voice
+                      Gemini Copilot
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (msg.response?.speech_audio_base64) {
-                          playSynthesizedAudio(
-                            msg.response.speech_audio_base64,
-                            msg.response.speech_audio_format || "audio/mpeg"
-                          );
-                        } else {
-                          handleReplaySpeech(msg.response?.spoken_reply || msg.text);
-                        }
-                      }}
-                      className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
-                      title="Listen to AI voice reading this response"
-                    >
-                      <Volume2 className="h-3.5 w-3.5" />
-                      <span>Listen</span>
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => copyFullMessage(msg.id, msg.text)}
+                        className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-200 transition-colors"
+                        title="Copy full response"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <>
+                            <Check className="h-3 w-3 text-emerald-400" />
+                            <span className="text-emerald-400 font-medium">Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" />
+                            <span>Copy</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (msg.response?.speech_audio_base64) {
+                            playSynthesizedAudio(
+                              msg.response.speech_audio_base64,
+                              msg.response.speech_audio_format || "audio/mpeg"
+                            );
+                          } else {
+                            handleReplaySpeech(msg.response?.spoken_reply || msg.text);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium transition-colors"
+                        title="Listen to AI voice reading this response"
+                      >
+                        <Volume2 className="h-3.5 w-3.5" />
+                        <span>Listen</span>
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1101,7 +1214,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             <button
               key={i}
               type="button"
-              onClick={() => handleSend(p)}
+              onClick={() => handleSend(p, false)}
               disabled={loading}
               className="inline-flex items-center gap-1.5 rounded-full border border-zinc-800 bg-zinc-900/80 px-3 py-1 text-xs text-zinc-400 hover:border-indigo-500/40 hover:text-indigo-300 transition-colors"
             >
@@ -1128,7 +1241,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              handleSend();
+              handleSend(undefined, interactionMode === "voice");
             }}
             className="flex items-center gap-2"
           >
@@ -1139,9 +1252,17 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
               className={`rounded-xl p-2.5 transition-all ${
                 orbState === "listening" || isRecordingMedia
                   ? "bg-rose-500/20 text-rose-400 ring-2 ring-rose-500 animate-pulse"
+                  : interactionMode === "voice"
+                  ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-600/30"
                   : "bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-white border border-zinc-800"
               }`}
-              title={orbState === "listening" ? "Stop recording voice" : "Speak to Mentor (English/Bangla)"}
+              title={
+                orbState === "listening"
+                  ? "Stop recording voice"
+                  : interactionMode === "voice"
+                  ? "Speak to Mentor (Voice Mode active)"
+                  : "Speak to Mentor (Voice input)"
+              }
             >
               {orbState === "listening" || isRecordingMedia ? (
                 <MicOff className="h-5 w-5" />
@@ -1160,7 +1281,11 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                 if (isSpeaking) stopSpeaking();
                 if (transcriptNotice) setTranscriptNotice(null);
               }}
-              placeholder="Ask Mentor in English, Bangla, or Banglish..."
+              placeholder={
+                interactionMode === "text"
+                  ? "Type your question (Silent text response)..."
+                  : "Speak with mic or type here (Spoken voice response)..."
+              }
               disabled={loading}
               className="flex-1 rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />

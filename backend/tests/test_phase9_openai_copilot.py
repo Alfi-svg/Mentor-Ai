@@ -344,19 +344,17 @@ def test_supported_voices():
 # 9. Voice Transcription via Whisper (Mocked)
 # -----------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_audio_transcription_whisper():
-    """Verify transcribe_audio endpoint parses Whisper response."""
+async def test_audio_transcription_gemini():
+    """Verify transcribe_audio parses Gemini transcription response."""
     fake_audio = b"RIFF....WAVEfmt ...."
     mock_client = MagicMock()
-    mock_transcription = MagicMock()
-    mock_transcription.text = "আজকের ক্লাস কয়টায়?"
-    mock_transcription.language = "bn"
-    mock_client.audio.transcriptions.create = AsyncMock(return_value=mock_transcription)
+    mock_response = MagicMock()
+    mock_response.text = "আজকের ক্লাস কয়টায়?"
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-    with patch.object(CopilotAgent, "get_openai_client", return_value=mock_client):
+    with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client):
         res = await CopilotAgent.transcribe_audio(fake_audio, "test.wav")
         assert res.transcript == "আজকের ক্লাস কয়টায়?"
-        assert res.language == "bn"
 
 
 # -----------------------------------------------------------------------------

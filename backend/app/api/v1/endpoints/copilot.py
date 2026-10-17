@@ -1,5 +1,6 @@
 """Copilot API endpoints for conversational educational guidance, schedule intelligence, and voice assistant."""
 
+import asyncio
 import uuid
 from typing import Annotated, Any
 
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
+from google.genai import errors as genai_errors
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -164,36 +166,41 @@ async def transcribe_audio_endpoint(
         )
 
     try:
-        return await CopilotAgent.transcribe_audio(contents, filename=filename)
+        return await CopilotAgent.transcribe_audio(
+            contents, filename=filename, content_type=file.content_type
+        )
     except ValueError as val_err:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(val_err),
         )
-    except AuthenticationError as auth_err:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"OpenAI authentication failed: {auth_err}",
+    except genai_errors.APIError as api_err:
+        err_msg = str(api_err)
+        is_quota = (
+            "429" in err_msg
+            or "RESOURCE_EXHAUSTED" in err_msg
+            or getattr(api_err, "code", None) == 429
         )
-    except RateLimitError as rl_err:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"OpenAI speech-to-text rate limit exceeded: {rl_err}",
+        status_code = (
+            status.HTTP_429_TOO_MANY_REQUESTS
+            if is_quota
+            else status.HTTP_502_BAD_GATEWAY
         )
-    except APITimeoutError:
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"Gemini speech transcription rate limit exceeded: {api_err}"
+            if is_quota
+            else f"Gemini speech transcription API error: {api_err}",
+        )
+    except genai_errors.ClientError as client_err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Gemini rejected audio recording: {client_err}",
+        )
+    except (TimeoutError, asyncio.TimeoutError):
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Speech-to-text transcription request timed out.",
-        )
-    except BadRequestError as br_err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OpenAI transcription rejected audio: {br_err}",
-        )
-    except APIConnectionError as conn_err:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to connect to OpenAI audio service: {conn_err}",
         )
     except HTTPException:
         raise
