@@ -18,6 +18,7 @@ import {
   X,
   ChevronRight,
   Compass,
+  Users,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { HealthStatusBadge } from "./HealthStatusBadge";
@@ -143,6 +144,11 @@ export function AppShell({ children }: AppShellProps) {
           href: "/settings/preferences",
           label: "Preferences",
           icon: Sliders,
+        },
+        {
+          href: "/team",
+          label: "Developer Team",
+          icon: Users,
         },
       ],
     },
@@ -349,7 +355,20 @@ export function AppShell({ children }: AppShellProps) {
         )}
 
         {/* Page Content Body */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 pb-safe">{children}</main>
+        <main className="flex flex-1 flex-col overflow-y-auto">
+          <div className="flex-1 p-4 sm:p-6 lg:p-8 pb-safe">{children}</div>
+          <footer className="border-t border-zinc-800/60 bg-zinc-950/70 px-6 py-4 text-center text-xs text-zinc-500 backdrop-blur-sm">
+            <p>
+              Built with care by{" "}
+              <Link
+                href="/team"
+                className="font-medium text-indigo-400 hover:text-indigo-300 transition-colors underline-offset-4 hover:underline"
+              >
+                Code ArenaX
+              </Link>
+            </p>
+          </footer>
+        </main>
 
         {/* Persistent Floating Copilot Trigger */}
         <button

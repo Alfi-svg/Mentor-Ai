@@ -2,9 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 test("Mobile Voice: audio-recorder utility exports detectSupportedAudioMime and stopAllMediaTracks", () => {
-  const filePath = path.resolve("frontend/lib/audio-recorder.ts");
+  const filePath = path.resolve(__dirname, "../lib/audio-recorder.ts");
   assert.equal(fs.existsSync(filePath), true, "audio-recorder.ts utility must exist");
 
   const content = fs.readFileSync(filePath, "utf-8");
@@ -16,7 +20,7 @@ test("Mobile Voice: audio-recorder utility exports detectSupportedAudioMime and 
 });
 
 test("Voice Presets: CopilotDrawer renders four real acoustic presets with live preview and stop controls", () => {
-  const drawerPath = path.resolve("frontend/components/copilot/CopilotDrawer.tsx");
+  const drawerPath = path.resolve(__dirname, "../components/copilot/CopilotDrawer.tsx");
   const content = fs.readFileSync(drawerPath, "utf-8");
 
   assert.equal(content.includes("Masculine"), true, "Must feature Masculine preset");
@@ -35,7 +39,7 @@ test("Voice Presets: CopilotDrawer renders four real acoustic presets with live 
 });
 
 test("VoiceInputButton: Features MediaRecorder, 60-second limit, timer display, and stream cleanup", () => {
-  const buttonPath = path.resolve("frontend/components/VoiceInputButton.tsx");
+  const buttonPath = path.resolve(__dirname, "../components/VoiceInputButton.tsx");
   const content = fs.readFileSync(buttonPath, "utf-8");
 
   assert.equal(content.includes("detectSupportedAudioMime"), true, "Must use dynamic MIME detection");
@@ -47,7 +51,7 @@ test("VoiceInputButton: Features MediaRecorder, 60-second limit, timer display, 
 });
 
 test("AI Planner: Default mode is standard day planner, renders clarification banner and add task step", () => {
-  const plannerPath = path.resolve("frontend/app/planner/page.tsx");
+  const plannerPath = path.resolve(__dirname, "../app/planner/page.tsx");
   const content = fs.readFileSync(plannerPath, "utf-8");
 
   // Default mode
@@ -63,7 +67,7 @@ test("AI Planner: Default mode is standard day planner, renders clarification ba
 });
 
 test("AI Planner: Confirmed Plan Persisted Card renders created tasks, timeline, and navigation links", () => {
-  const plannerPath = path.resolve("frontend/app/planner/page.tsx");
+  const plannerPath = path.resolve(__dirname, "../app/planner/page.tsx");
   const content = fs.readFileSync(plannerPath, "utf-8");
 
   assert.equal(content.includes("confirmResult &&"), true, "Must conditionally render confirmResult card");

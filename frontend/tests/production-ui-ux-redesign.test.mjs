@@ -2,9 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 test("Phase 5A: Absence of Gemini Free Tier labels in user-facing Copilot UI", () => {
-  const copilotDrawerPath = path.resolve("frontend/components/copilot/CopilotDrawer.tsx");
+  const copilotDrawerPath = path.resolve(__dirname, "../components/copilot/CopilotDrawer.tsx");
   const content = fs.readFileSync(copilotDrawerPath, "utf-8");
 
   assert.equal(
@@ -25,7 +29,7 @@ test("Phase 5A: Absence of Gemini Free Tier labels in user-facing Copilot UI", (
 });
 
 test("Phase 3: Brand Logo component existence and product name consistency", () => {
-  const logoPath = path.resolve("frontend/components/MentorLogo.tsx");
+  const logoPath = path.resolve(__dirname, "../components/MentorLogo.tsx");
   assert.equal(fs.existsSync(logoPath), true, "MentorLogo.tsx component must exist");
 
   const logoContent = fs.readFileSync(logoPath, "utf-8");
@@ -34,7 +38,7 @@ test("Phase 3: Brand Logo component existence and product name consistency", () 
 });
 
 test("Phase 5B: CopilotMarkdown colorful hierarchy and bold text emphasis", () => {
-  const markdownPath = path.resolve("frontend/components/copilot/CopilotMarkdown.tsx");
+  const markdownPath = path.resolve(__dirname, "../components/copilot/CopilotMarkdown.tsx");
   const content = fs.readFileSync(markdownPath, "utf-8");
 
   assert.equal(content.includes("text-indigo-300"), true, "H1 must feature indigo brand accent");
@@ -44,7 +48,7 @@ test("Phase 5B: CopilotMarkdown colorful hierarchy and bold text emphasis", () =
 });
 
 test("Phase 7: Five-Form-Factor responsive design and dedicated Smartwatch mode", () => {
-  const watchPath = path.resolve("frontend/app/watch/page.tsx");
+  const watchPath = path.resolve(__dirname, "../app/watch/page.tsx");
   assert.equal(fs.existsSync(watchPath), true, "Watch companion page /watch must exist");
 
   const watchContent = fs.readFileSync(watchPath, "utf-8");

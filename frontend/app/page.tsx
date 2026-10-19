@@ -216,6 +216,15 @@ export default function LandingPage() {
         <p className="mt-1">
           Designed and built with Next.js 15, FastAPI, Python 3.12, Supabase PostgreSQL, and Google Antigravity.
         </p>
+        <p className="mt-2 text-zinc-500">
+          Built with care by{" "}
+          <Link
+            href="/team"
+            className="font-medium text-indigo-400 hover:text-indigo-300 transition-colors underline-offset-4 hover:underline"
+          >
+            Code ArenaX
+          </Link>
+        </p>
       </footer>
     </div>
   );
