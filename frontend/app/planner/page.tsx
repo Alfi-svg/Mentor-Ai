@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { VoiceInputButton } from "@/components/VoiceInputButton";
+import { useToast } from "@/components/ui/ToastProvider";
 import { apiClient, ApiClientError } from "@/lib/api-client";
 import {
   ActionRecord,
@@ -47,8 +48,9 @@ export default function PlannerPage() {
       ? Intl.DateTimeFormat().resolvedOptions().timeZone
       : "UTC";
 
-  // Mode: LifeOps Executive Agent vs Standard Day Planner
-  const [plannerMode, setPlannerMode] = useState<"lifeops" | "standard">("lifeops");
+  // Mode: Standard Day Planner vs Executive LifeOps Agent
+  const [plannerMode, setPlannerMode] = useState<"standard" | "lifeops">("standard");
+  const toast = useToast();
 
   // Form State
   const [prompt, setPrompt] = useState("");
@@ -178,8 +180,35 @@ export default function PlannerPage() {
     setEditableTasks(updated);
   };
 
+  const handleAddTask = () => {
+    setEditableTasks((prev) => [
+      ...prev,
+      {
+        title: "New Study Task",
+        estimated_duration_minutes: 45,
+        duration_minutes: 45,
+        priority: "P3",
+        energy_level: "medium",
+        deadline: null,
+      },
+    ]);
+  };
+
+  const handleResetPlan = () => {
+    setPrompt("");
+    setProposal(null);
+    setConfirmResult(null);
+    setEditableTasks([]);
+    setError(null);
+  };
+
   const handleConfirmPlan = async () => {
     if (!proposal) return;
+
+    if (editableTasks.length === 0) {
+      setError("Please add at least one task to confirm the plan.");
+      return;
+    }
 
     const invalidTask = editableTasks.find(
       (t) => (t.duration_minutes || t.estimated_duration_minutes || 0) <= 0
@@ -213,6 +242,7 @@ export default function PlannerPage() {
       });
 
       setConfirmResult(result);
+      setProposal(null);
     } catch (err) {
       if (err instanceof ApiClientError) {
         setError(err.message);
@@ -235,8 +265,15 @@ export default function PlannerPage() {
           staged_actions: lifeopsResult.staged_actions.filter((a) => a.id !== actionId),
         });
       }
+      toast.success(
+        confirmed ? "Action Approved" : "Action Rejected",
+        `Successfully ${confirmed ? "approved" : "rejected"} action record.`
+      );
     } catch (err) {
-      alert("Action processing error: " + (err instanceof Error ? err.message : String(err)));
+      toast.error(
+        "Action Processing Failed",
+        err instanceof Error ? err.message : String(err)
+      );
     } finally {
       setActionProcessing(null);
     }
@@ -613,13 +650,50 @@ export default function PlannerPage() {
         {/* Standard Proposal Confirmation Screen (Preserved) */}
         {proposal && (
           <div className="space-y-6">
+            {/* Clarification & Suggestions Banner */}
+            {(proposal.clarification_question || (proposal.missing_information && proposal.missing_information.length > 0)) && (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5 space-y-3">
+                <div className="flex items-center gap-2 text-amber-400">
+                  <HelpCircle className="h-5 w-5" />
+                  <h3 className="text-sm font-bold text-white">Clarification & Suggestions</h3>
+                </div>
+                {proposal.clarification_question && (
+                  <p className="text-xs text-amber-200 leading-relaxed">
+                    {proposal.clarification_question}
+                  </p>
+                )}
+                {proposal.missing_information && proposal.missing_information.length > 0 && (
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-semibold text-amber-300 uppercase tracking-wider">
+                      Missing Information Noted:
+                    </span>
+                    <ul className="list-disc pl-5 text-xs text-amber-200/90 space-y-1">
+                      {proposal.missing_information.map((info, idx) => (
+                        <li key={idx}>{info}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="rounded-xl border border-zinc-800/80 bg-zinc-900/40 p-5 space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
                   <ListPlus className="h-4 w-4 text-brand-400" />
-                  Proposed Tasks ({editableTasks.length})
-                </h2>
-                <span className="text-xs text-zinc-400">Target Date: {proposal.target_date}</span>
+                  <h2 className="text-sm font-semibold text-white">
+                    Proposed Tasks ({editableTasks.length})
+                  </h2>
+                  <span className="text-xs text-zinc-400">Target Date: {proposal.target_date}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddTask}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-brand-500/30 bg-brand-500/10 px-3 py-1.5 text-xs font-semibold text-brand-300 hover:bg-brand-500/20 transition"
+                >
+                  <ListPlus className="h-3.5 w-3.5" />
+                  Add Task Step
+                </button>
               </div>
 
               <div className="space-y-3">
@@ -640,7 +714,7 @@ export default function PlannerPage() {
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                       <div>
                         <label className="text-[10px] uppercase text-zinc-500 font-bold">Duration (min)</label>
                         <input
@@ -656,7 +730,7 @@ export default function PlannerPage() {
                         <label className="text-[10px] uppercase text-zinc-500 font-bold">Priority</label>
                         <select
                           value={t.priority || "P3"}
-                          onChange={(e) => handleTaskChange(idx, "priority", e.target.value)}
+                          onChange={(e) => handleTaskChange(idx, "priority", e.target.value as TaskPriority)}
                           className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-white"
                         >
                           <option value="P1">P1 (Urgent)</option>
@@ -696,6 +770,171 @@ export default function PlannerPage() {
                   <CheckCircle2 className="h-4 w-4" />
                   <span>{confirming ? "Confirming..." : "Confirm & Persist Schedule"}</span>
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Confirmed Plan Persisted Card */}
+        {confirmResult && (
+          <div className="space-y-6">
+            <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-6 space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-500/20 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="rounded-full bg-emerald-500/20 p-2 text-emerald-400">
+                    <CheckCircle2 className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-white">Plan Confirmed & Persisted!</h2>
+                    <p className="text-xs text-zinc-300">
+                      Successfully saved {confirmResult.created_tasks.length} task{confirmResult.created_tasks.length === 1 ? "" : "s"} for{" "}
+                      <span className="font-semibold text-emerald-300">{confirmResult.target_date}</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-emerald-500/10 border border-emerald-500/30 px-3 py-1 text-xs font-bold text-emerald-300 uppercase">
+                    Status: {confirmResult.status}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleResetPlan}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-700 transition"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    Plan Another Day
+                  </button>
+                </div>
+              </div>
+
+              {/* Created Tasks List */}
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400">
+                  Persisted Tasks ({confirmResult.created_tasks.length})
+                </h3>
+                <div className="grid gap-2.5 sm:grid-cols-2">
+                  {confirmResult.created_tasks.map((task) => (
+                    <div
+                      key={task.id}
+                      className="rounded-lg border border-zinc-800 bg-zinc-950/70 p-3.5 space-y-2 flex flex-col justify-between"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <span className="text-xs font-semibold text-white leading-snug">
+                          {task.title}
+                        </span>
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                            task.priority === "P1"
+                              ? "bg-red-500/20 text-red-400 border border-red-500/30"
+                              : task.priority === "P2"
+                              ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                              : "bg-zinc-800 text-zinc-300"
+                          }`}
+                        >
+                          {task.priority}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-3 text-[11px] text-zinc-400 pt-1 border-t border-zinc-900">
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3 text-sky-400" />
+                          {task.estimated_duration_minutes || task.duration_minutes || 60}m
+                        </span>
+                        {task.deadline && (
+                          <span className="flex items-center gap-1 text-zinc-300">
+                            <Calendar className="h-3 w-3 text-emerald-400" />
+                            {new Date(task.deadline).toLocaleDateString([], {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Unscheduled Tasks Warning If Any */}
+              {confirmResult.schedule?.unscheduled_tasks && confirmResult.schedule.unscheduled_tasks.length > 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 space-y-2">
+                  <div className="flex items-center gap-2 text-amber-400">
+                    <AlertTriangle className="h-4 w-4" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-amber-300">
+                      Unscheduled Task Notice ({confirmResult.schedule.unscheduled_tasks.length})
+                    </h4>
+                  </div>
+                  <p className="text-xs text-amber-200/90">
+                    The following tasks were successfully persisted to your Task list, but could not fit in the target day&apos;s working hours without exceeding time limits:
+                  </p>
+                  <ul className="list-disc pl-5 text-xs text-amber-200/90 space-y-1">
+                    {confirmResult.schedule.unscheduled_tasks.map((un, idx) => (
+                      <li key={idx}>
+                        <span className="font-semibold text-white">{un.task_title || un.title || "Task"}</span>: {un.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Scheduled Timeline Blocks If Available */}
+              {confirmResult.schedule?.scheduled_blocks && confirmResult.schedule.scheduled_blocks.length > 0 && (
+                <div className="space-y-3 pt-2">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                      <Clock className="h-3.5 w-3.5 text-sky-400" />
+                      Generated Schedule Timeline
+                    </h3>
+                    <span className="text-[11px] text-zinc-400">
+                      {confirmResult.schedule.scheduled_blocks.length} allocated block{confirmResult.schedule.scheduled_blocks.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-zinc-800/60 rounded-lg border border-zinc-800 bg-zinc-950/60 overflow-hidden">
+                    {confirmResult.schedule.scheduled_blocks.map((blk, i) => (
+                      <div key={i} className="p-3 text-xs flex items-center justify-between">
+                        <div>
+                          <p className="font-semibold text-white">{blk.title}</p>
+                          <p className="text-[11px] text-zinc-400">
+                            {new Date(blk.start_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} -{" "}
+                            {new Date(blk.end_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </p>
+                        </div>
+                        <span className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-300 font-medium capitalize">
+                          {blk.block_type.replace(/_/g, " ")}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Navigation Action Links */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-emerald-500/20">
+                <span className="text-xs text-zinc-400">
+                  Tasks are active and ready in your workspace.
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Link
+                    href="/tasks"
+                    className="rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-1.5 text-xs font-semibold text-zinc-200 hover:text-white hover:bg-zinc-700 transition"
+                  >
+                    View in Tasks
+                  </Link>
+                  <Link
+                    href="/calendar"
+                    className="rounded-lg border border-zinc-700 bg-zinc-800 px-3.5 py-1.5 text-xs font-semibold text-zinc-200 hover:text-white hover:bg-zinc-700 transition"
+                  >
+                    View in Calendar
+                  </Link>
+                  <Link
+                    href="/schedule"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-1.5 text-xs font-semibold text-white hover:bg-brand-500 transition"
+                  >
+                    <span>View Schedule</span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                </div>
               </div>
             </div>
           </div>

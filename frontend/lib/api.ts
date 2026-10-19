@@ -18,7 +18,9 @@ export interface ReadinessStatus {
   timestamp: string;
 }
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+import { getApiBaseUrl } from "./api-client";
+
+const API_BASE_URL = getApiBaseUrl();
 
 export async function fetchHealth(): Promise<HealthStatus | null> {
   try {

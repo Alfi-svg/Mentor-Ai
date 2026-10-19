@@ -175,20 +175,38 @@ class Settings(BaseSettings):
     @classmethod
     def assemble_cors_origins(cls, v: str | list[str]) -> list[str]:
         """Convert comma-separated origin string into list of trimmed strings."""
+        origins: list[str] = []
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",") if origin.strip()]
-        if isinstance(v, list):
-            return [str(origin).strip() for origin in v if str(origin).strip()]
-        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+            origins = [origin.strip() for origin in v.split(",") if origin.strip()]
+        elif isinstance(v, list):
+            origins = [str(origin).strip() for origin in v if str(origin).strip()]
+        else:
+            origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+        canonical_defaults = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "https://frontend-ten-delta-a5irgspmf7.vercel.app",
+        ]
+        for cd in canonical_defaults:
+            if cd not in origins and "*" not in origins:
+                origins.append(cd)
+
+        return origins
 
     @field_validator("ALLOWED_ORIGINS")
     @classmethod
     def validate_safe_origins(cls, origins: list[str], info: ValidationInfo) -> list[str]:
-        """Ensure wildcards are not used when running in production."""
-        # Note: In Pydantic v2, info.data gives access to other validated fields
+        """Ensure wildcards are not used in production and FRONTEND_URL is explicitly permitted."""
         env = info.data.get("ENVIRONMENT", "development")
         if env == "production" and "*" in origins:
             raise ValueError("Wildcard '*' origin is strictly forbidden in production mode.")
+
+        # Ensure configured FRONTEND_URL is explicitly in allowed list
+        frontend_url = str(info.data.get("FRONTEND_URL", "")).strip().rstrip("/")
+        if frontend_url and frontend_url not in origins:
+            origins.append(frontend_url)
+
         return origins
 
     @property

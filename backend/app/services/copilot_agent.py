@@ -55,6 +55,7 @@ from app.services.copilot.tools import (
     get_calendar_event_details,
     get_calendar_events_for_date,
     get_completed_tasks,
+    get_daily_briefing,
     get_gmail_message,
     get_gmail_thread,
     get_overdue_tasks,
@@ -79,6 +80,35 @@ logger = get_logger("mentor_ai.copilot.agent")
 MAX_TOOL_ROUNDS = 5
 
 SUPPORTED_VOICE_OPTIONS: list[CopilotVoiceOption] = [
+    CopilotVoiceOption(
+        id="masculine",
+        name="Masculine",
+        perceived_sound="masculine",
+        description="Natural, balanced masculine-sounding voice with clear articulation.",
+        sample_text="Hello! I am ready to review your schedule, master concepts, or draft email replies.",
+    ),
+    CopilotVoiceOption(
+        id="feminine",
+        name="Feminine",
+        perceived_sound="feminine",
+        description="Natural, clear feminine-sounding voice with a warm, supportive tone.",
+        sample_text="Hello! I am Mentor, your educational copilot. How can I help with your studies today?",
+    ),
+    CopilotVoiceOption(
+        id="deep_vocal",
+        name="Deep Vocal",
+        perceived_sound="masculine",
+        description="Lower-pitched, rich, authoritative vocal tone for deep focus.",
+        sample_text="Welcome back. Let us review your tasks and keep your study streak strong.",
+    ),
+    CopilotVoiceOption(
+        id="natural_vocal",
+        name="Natural Vocal",
+        perceived_sound="feminine",
+        description="Distinct, conversational voice with a balanced and versatile tone.",
+        sample_text="Good morning! You have scheduled focus blocks and two academic deadlines today.",
+    ),
+    # Legacy voice presets preserved for backward compatibility
     CopilotVoiceOption(
         id="nova",
         name="Nova",
@@ -111,6 +141,18 @@ SUPPORTED_VOICE_OPTIONS: list[CopilotVoiceOption] = [
 
 
 OPENAI_AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_daily_briefing",
+            "description": "Retrieves an integrated, verified daily briefing across today's schedule, external calendar events, overdue tasks, upcoming deadlines, unread important emails, and student study streak, along with a deterministic recommendation for the first task to focus on.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -364,7 +406,7 @@ class CopilotAgent:
 
     @classmethod
     def get_gemini_tools(cls) -> list[types.Tool]:
-        """Construct Gemini-compatible FunctionDeclaration list for all 17 agent tools."""
+        """Construct Gemini-compatible FunctionDeclaration list for all agent tools."""
         gemini_funcs: list[types.FunctionDeclaration] = []
         for tool_def in OPENAI_AGENT_TOOLS:
             fn = tool_def["function"]
@@ -411,6 +453,16 @@ CORE CAPABILITIES & TOOLS:
 3. Gmail: Check new or unread emails, read email details, summarize messages, and draft contextual replies.
 4. Educational Discovery: Search verified courses, video tutorials, and documentation from authoritative platforms (MIT OCW, Khan Academy, 3Blue1Brown, Stanford, official docs).
 5. Student Growth: Track study streaks, review missed sessions, and provide constructive recovery plans.
+6. Proactive Daily Briefing: When the student asks "Brief me on my day", "What should I focus on first?", "What does my day look like?", or requests a daily/morning briefing or day overview:
+   - ALWAYS invoke `get_daily_briefing` to retrieve verified schedule, task, calendar, Gmail, and streak data.
+   - Provide a structured response with clear Markdown sections:
+     * 🌅 Daily Briefing header with local date and time.
+     * 🎯 Recommended First Focus (state the recommended task and explain why it was chosen based on priority, deadline, or schedule).
+     * 📅 Today's Schedule & Commitments (distinguish Google Calendar events from internal study blocks).
+     * ⚠️ Deadlines & Overdue Tasks (highlight overdue tasks and deadlines in the next 72 hours).
+     * 📬 Gmail & Communications (summarize unread emails, or state truthfully if Gmail is disconnected).
+     * ⚡ Consistency & Progress (report study streak and completed tasks).
+   - Never invent or hallucinate tasks, events, deadlines, or emails.
 
 STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
 - DO NOT execute arbitrary shell commands, SQL queries, or unrestricted web scraping.
@@ -446,7 +498,18 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
     ) -> dict[str, Any]:
         """Unified tool execution dispatcher enforcing user isolation, validation, and structured context collection."""
         try:
-            if fn_name == "get_today_tasks":
+            if fn_name == "get_daily_briefing":
+                tool_output = await get_daily_briefing(db=db, user_id=user_id, user_tz_str=user_tz)
+                context_state["daily_briefing"] = tool_output.get("briefing_payload")
+                context_state["schedule_summary"] = tool_output.get("schedule_summary")
+                context_state["navigation"] = CopilotNavigationTarget(
+                    route="/planner",
+                    params={},
+                    label="Open AI Daily Planner",
+                )
+                return tool_output
+
+            elif fn_name == "get_today_tasks":
                 tool_output = await get_today_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
                 context_state["schedule_summary"] = await get_today_schedule(db=db, user_id=user_id, user_tz_str=user_tz)
                 context_state["navigation"] = CopilotNavigationTarget(
@@ -648,6 +711,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             "navigation": None,
             "accountability_data": None,
             "approval_id": None,
+            "daily_briefing": None,
         }
         tools_invoked: list[str] = []
         tool_results_list: list[dict[str, Any]] = []
@@ -698,6 +762,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                     resources=fallback_res.resources,
                     navigation=fallback_res.navigation,
                     accountability=fallback_res.accountability,
+                    daily_briefing=fallback_res.daily_briefing,
                     verification_status=status_val,
                 )
 
@@ -776,6 +841,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             approval_id=context_state["approval_id"],
             navigation=context_state["navigation"],
             accountability=context_state["accountability_data"],
+            daily_briefing=context_state["daily_briefing"],
             code_line_count=max_code_lines,
             verification_status="verified",
         )
@@ -811,6 +877,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             "navigation": None,
             "accountability_data": None,
             "approval_id": None,
+            "daily_briefing": None,
         }
         tools_invoked: list[str] = []
         tool_results_list: list[dict[str, Any]] = []
@@ -841,6 +908,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
                     resources=fallback_res.resources,
                     navigation=fallback_res.navigation,
                     accountability=fallback_res.accountability,
+                    daily_briefing=fallback_res.daily_briefing,
                     verification_status="error",
                 )
 
@@ -923,6 +991,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             approval_id=context_state["approval_id"],
             navigation=context_state["navigation"],
             accountability=context_state["accountability_data"],
+            daily_briefing=context_state["daily_briefing"],
             code_line_count=max_code_lines,
             verification_status="verified",
         )
@@ -1007,6 +1076,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             approval_id=fallback_res.email_draft.approval_id if fallback_res.email_draft else None,
             navigation=fallback_res.navigation,
             accountability=fallback_res.accountability,
+            daily_briefing=fallback_res.daily_briefing,
             code_line_count=fallback_res.code_line_count,
             verification_status="unconfigured",
         )
@@ -1024,7 +1094,7 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             ".webm": "audio/webm",
             ".wav": "audio/wav",
             ".mp3": "audio/mp3",
-            ".m4a": "audio/m4a",
+            ".m4a": "audio/mp4",
             ".mp4": "audio/mp4",
             ".ogg": "audio/ogg",
             ".oga": "audio/ogg",
@@ -1032,9 +1102,12 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
             ".aac": "audio/aac",
         }
         ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ".webm"
-        detected_mime = content_type or mime_map.get(ext, "audio/webm")
-        if detected_mime == "audio/x-m4a":
-            detected_mime = "audio/m4a"
+        base_mime = (content_type or "").split(";")[0].strip().lower()
+        if not base_mime or base_mime == "application/octet-stream":
+            base_mime = mime_map.get(ext, "audio/webm")
+        if base_mime in ("audio/x-m4a", "audio/m4a"):
+            base_mime = "audio/mp4"
+        detected_mime = base_mime
 
         audio_part = types.Part.from_bytes(data=file_bytes, mime_type=detected_mime)
         prompt = (
@@ -1085,9 +1158,21 @@ STRICT OPERATIONAL SAFETY & EXECUTION BOUNDARIES:
         if not clean_text or not clean_text.strip():
             clean_text = "I am ready to help."
 
-        # Validate voice preset against supported OpenAI TTS presets
-        valid_voices = {"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
-        selected_voice = voice_preset.lower() if voice_preset.lower() in valid_voices else "nova"
+        # Map four real voice presets and legacy presets to supported OpenAI TTS voices
+        voice_map = {
+            "masculine": "echo",
+            "feminine": "nova",
+            "deep_vocal": "onyx",
+            "natural_vocal": "alloy",
+            "echo": "echo",
+            "nova": "nova",
+            "onyx": "onyx",
+            "shimmer": "shimmer",
+            "alloy": "alloy",
+            "fable": "fable",
+        }
+        normalized_preset = voice_preset.lower().strip() if voice_preset else "nova"
+        selected_voice = voice_map.get(normalized_preset, "nova")
 
         # Check TTS model compatibility
         valid_models = {"tts-1", "tts-1-hd"}

@@ -843,3 +843,295 @@ async def get_student_accountability_tool(
         "supportive_message": accountability.supportive_message,
         "suggested_recovery_task": accountability.suggested_recovery_task,
     }
+
+
+# Proactive Daily Briefing Tool
+async def get_daily_briefing(
+    db: AsyncSession, user_id: uuid.UUID, user_tz_str: str = "Asia/Dhaka"
+) -> dict[str, Any]:
+    """Compile comprehensive, deterministic daily briefing across schedule, tasks, calendar, and Gmail."""
+    from app.services.calendar.service import CalendarService
+
+    user_tz = await resolve_user_timezone(db, user_id, user_tz_str)
+    try:
+        tz = zoneinfo.ZoneInfo(user_tz)
+    except Exception:
+        tz = zoneinfo.ZoneInfo("Asia/Dhaka")
+        user_tz = "Asia/Dhaka"
+
+    now_utc = datetime.now(UTC)
+    now_loc = now_utc.astimezone(tz)
+    today_date = now_loc.date()
+    target_date_str = today_date.isoformat()
+    hour = now_loc.hour
+    if hour < 12:
+        greeting = "Good morning"
+    elif hour < 17:
+        greeting = "Good afternoon"
+    else:
+        greeting = "Good evening"
+
+    # 1. Fetch Today's Full Schedule (Blocks + Events + Backlog)
+    today_schedule = await get_today_schedule(db=db, user_id=user_id, user_tz_str=user_tz)
+    scheduled_items = today_schedule.scheduled_items
+    calendar_events = [it for it in scheduled_items if it.item_type == "calendar_event"]
+    task_blocks = [it for it in scheduled_items if it.item_type == "task"]
+    unscheduled_tasks = today_schedule.unscheduled_tasks
+
+    # 2. Check Google Calendar Status
+    cal_connected = False
+    cal_account_email: str | None = None
+    try:
+        cal_status = await CalendarService.get_status(user_id=user_id, db=db)
+        cal_connected = bool(cal_status.is_connected)
+        cal_account_email = cal_status.account_email
+    except Exception:
+        cal_connected = False
+
+    # 3. Fetch Overdue Tasks
+    overdue_tasks = await get_overdue_tasks(db=db, user_id=user_id, user_tz_str=user_tz)
+
+    # 4. Fetch Upcoming Deadlines (Next 72 hours)
+    upcoming_deadlines = await get_upcoming_deadlines(db=db, user_id=user_id, user_tz_str=user_tz, days=3)
+
+    # 5. Fetch Gmail Messages (Unread & Important)
+    gmail_res = await search_gmail_messages(db=db, user_id=user_id, query="is:unread", limit=5)
+    gmail_connected = bool(gmail_res.get("is_connected", False))
+    unread_emails_count = int(gmail_res.get("unread_count", 0))
+    unread_messages = gmail_res.get("messages", [])
+    gmail_account_email = gmail_res.get("account_email")
+
+    # 6. Fetch Student Consistency / Streak
+    accountability = await get_student_accountability_tool(db=db, user_id=user_id)
+    streak_days = int(accountability.get("streak_days", 0))
+    completed_today_count = int(accountability.get("completed_today_count", 0))
+
+    # 7. Deterministic Recommended First Focus Logic
+    # Priority Hierarchy:
+    # 1. Critical Overdue Task (P1 or P2)
+    # 2. Currently Active or Next Scheduled Focus Block Today
+    # 3. Imminent Deadline (within next 72 hours)
+    # 4. Any remaining overdue task (P3/P4)
+    # 5. High-priority backlog task
+    # 6. All clear
+    recommended_focus: dict[str, Any] = {
+        "task_id": None,
+        "title": "All caught up!",
+        "priority": None,
+        "reason": "You have no overdue tasks, scheduled blocks, or approaching deadlines right now.",
+        "action_type": "all_clear",
+        "scheduled_time": None,
+        "deadline": None,
+    }
+
+    # Step 1: Check Critical Overdue Tasks (P1 or P2)
+    critical_overdue = [
+        t for t in overdue_tasks if str(t.get("priority", "")).upper() in ("P1", "P2", "URGENT", "HIGH")
+    ]
+    if critical_overdue:
+        # Sort P1 before P2
+        critical_overdue.sort(key=lambda x: (0 if str(x.get("priority", "")).upper() == "P1" else 1))
+        t = critical_overdue[0]
+        p_label = str(t.get("priority", "P1")).upper()
+        recommended_focus = {
+            "task_id": t["id"],
+            "title": t["title"],
+            "priority": p_label,
+            "reason": f"This task is overdue (due {t.get('deadline') or 'earlier'}) with {p_label} priority. Resolving it clears your backlog and protects your schedule.",
+            "action_type": "overdue",
+            "deadline": t.get("deadline"),
+            "scheduled_time": None,
+        }
+    # Step 2: Check Today's Scheduled Focus Blocks
+    elif task_blocks:
+        uncompleted_blocks = [b for b in task_blocks if not b.is_completed]
+        if uncompleted_blocks:
+            first_block = uncompleted_blocks[0]
+            recommended_focus = {
+                "task_id": first_block.task_id or first_block.id,
+                "title": first_block.title,
+                "priority": str(first_block.priority).upper() if first_block.priority else "P2",
+                "reason": f"You have a dedicated study session scheduled from {first_block.start_time} to {first_block.end_time}. Staying on schedule preserves your study momentum.",
+                "action_type": "scheduled_block",
+                "scheduled_time": f"{first_block.start_time} – {first_block.end_time}",
+                "deadline": None,
+            }
+    # Step 3: Check Approaching Deadlines (next 72 hours)
+    if recommended_focus["action_type"] == "all_clear" and upcoming_deadlines:
+        sorted_dl = sorted(
+            upcoming_deadlines,
+            key=lambda x: (
+                0 if str(x.get("priority", "")).upper() == "P1" else (
+                    1 if str(x.get("priority", "")).upper() == "P2" else 2
+                )
+            ),
+        )
+        d = sorted_dl[0]
+        p_label = str(d.get("priority", "P2")).upper()
+        recommended_focus = {
+            "task_id": d["id"],
+            "title": d["title"],
+            "priority": p_label,
+            "reason": f"This task has an approaching academic deadline due on {d.get('deadline_time') or 'soon'} ({p_label}). Tackling it early avoids last-minute cramming.",
+            "action_type": "upcoming_deadline",
+            "deadline": d.get("deadline_time"),
+            "scheduled_time": None,
+        }
+    # Step 4: Check Any Other Overdue Task
+    if recommended_focus["action_type"] == "all_clear" and overdue_tasks:
+        t = overdue_tasks[0]
+        recommended_focus = {
+            "task_id": t["id"],
+            "title": t["title"],
+            "priority": str(t.get("priority", "P3")).upper(),
+            "reason": f"This task was due {t.get('deadline') or 'earlier'}. Completing or rescheduling it keeps your task list clean.",
+            "action_type": "overdue",
+            "deadline": t.get("deadline"),
+            "scheduled_time": None,
+        }
+    # Step 5: Check Unscheduled Backlog Tasks
+    if recommended_focus["action_type"] == "all_clear" and unscheduled_tasks:
+        u = unscheduled_tasks[0]
+        recommended_focus = {
+            "task_id": u["id"],
+            "title": u["title"],
+            "priority": str(u.get("priority", "P3")).upper(),
+            "reason": "Your scheduled blocks are clear. Starting this priority item from your backlog builds positive academic momentum.",
+            "action_type": "backlog",
+            "deadline": u.get("deadline"),
+            "scheduled_time": None,
+        }
+
+    # 8. Assemble Clean Markdown Text
+    date_display = now_loc.strftime("%A, %B %d, %Y")
+    lines: list[str] = [
+        f"## 🌅 {greeting}! Here is your Daily Briefing for {date_display}",
+        f"*Timezone: `{user_tz}` | Local Time: `{now_loc.strftime('%I:%M %p').lstrip('0')}`*",
+        "",
+        "### 🎯 Recommended First Focus",
+    ]
+
+    if recommended_focus["action_type"] != "all_clear":
+        p_badge = f"`{recommended_focus['priority']}`" if recommended_focus.get("priority") else ""
+        time_info = ""
+        if recommended_focus.get("scheduled_time"):
+            time_info = f" • **Time:** {recommended_focus['scheduled_time']}"
+        elif recommended_focus.get("deadline"):
+            time_info = f" • **Due:** {recommended_focus['deadline']}"
+
+        lines.extend([
+            f"> **{recommended_focus['title']}** {p_badge}{time_info}",
+            f"> **Why:** {recommended_focus['reason']}",
+            "",
+        ])
+    else:
+        lines.extend([
+            "> **All Caught Up!**",
+            f"> **Why:** {recommended_focus['reason']}",
+            "",
+        ])
+
+    lines.append("---")
+    lines.append("### 📅 Today's Schedule & Commitments")
+    if scheduled_items:
+        lines.append(f"You have **{len(scheduled_items)}** scheduled item{'s' if len(scheduled_items) != 1 else ''} today:")
+        for item in scheduled_items:
+            type_tag = "Google Event" if item.item_type == "calendar_event" else "Study Block"
+            status_tag = " *(completed)*" if item.is_completed else ""
+            lines.append(f"- **{item.start_time} – {item.end_time}**: {item.title} `[{type_tag}]`{status_tag}")
+    else:
+        lines.append("- No fixed events or focus blocks scheduled for today. Your day is open for self-paced study.")
+
+    if not cal_connected:
+        lines.append("> ℹ️ *Google Calendar is not connected. Connect in Settings to view external courses and meetings.*")
+
+    lines.append("")
+    lines.append("### ⚠️ Deadlines & Overdue Tasks")
+    if overdue_tasks:
+        lines.append(f"**Overdue ({len(overdue_tasks)}):**")
+        for ot in overdue_tasks[:4]:
+            lines.append(f"- 🔴 **{ot['title']}** (Due {ot.get('deadline') or 'earlier'}, `{ot.get('priority', 'P3')}`)")
+        if len(overdue_tasks) > 4:
+            lines.append(f"- *...and {len(overdue_tasks) - 4} more overdue task(s).*")
+    else:
+        lines.append("- ✅ **No overdue tasks.** Your backlog is clean!")
+
+    if upcoming_deadlines:
+        lines.append(f"**Upcoming Deadlines ({len(upcoming_deadlines)} in next 72h):**")
+        for dl in upcoming_deadlines[:4]:
+            lines.append(f"- ⏳ **{dl['title']}** (Due {dl.get('deadline_time') or 'soon'}, `{dl.get('priority', 'P2')}`)")
+    elif not overdue_tasks:
+        lines.append("- ✅ **No approaching deadlines** in the next 3 days.")
+
+    lines.append("")
+    lines.append("### 📬 Gmail & Communications")
+    if gmail_connected:
+        if unread_messages:
+            lines.append(f"You have **{unread_emails_count} unread email{'s' if unread_emails_count != 1 else ''}** in `{gmail_account_email or 'Gmail'}`:")
+            for m in unread_messages[:3]:
+                sender_name = m['sender'].split("<")[0].strip() if "<" in m['sender'] else m['sender']
+                lines.append(f"- 📩 From **{sender_name}**: \"{m['subject']}\"")
+        else:
+            lines.append(f"- ✅ Connected as `{gmail_account_email or 'active user'}`. Inbox is caught up (0 unread).")
+    else:
+        lines.append("> ℹ️ *Gmail is not connected. Connect in Settings to review important academic emails and instructor announcements.*")
+
+    lines.append("")
+    lines.append("### ⚡ Consistency & Progress")
+    lines.append(f"- **Current Study Streak:** 🔥 **{streak_days} day{'s' if streak_days != 1 else ''}**")
+    lines.append(f"- **Completed Today:** ✅ **{completed_today_count} task{'s' if completed_today_count != 1 else ''}**")
+
+    formatted_md = "\n".join(lines)
+
+    # 9. Spoken Concise Script for Audio
+    rec_title = recommended_focus["title"]
+    if recommended_focus["action_type"] != "all_clear":
+        focus_phrase = f"your top recommendation is to focus on {rec_title}"
+    else:
+        focus_phrase = "your schedule is all clear with no pending deadlines"
+
+    sched_phrase = f"{len(scheduled_items)} scheduled session{'s' if len(scheduled_items) != 1 else ''}"
+    overdue_phrase = f"{len(overdue_tasks)} overdue item{'s' if len(overdue_tasks) != 1 else ''}"
+    spoken_summary = (
+        f"{greeting}! Here is your daily briefing for {now_loc.strftime('%A, %B %d')}. "
+        f"Right now, {focus_phrase}. "
+        f"You have {sched_phrase}, {overdue_phrase}, and {unread_emails_count} unread emails. "
+        f"Let's make today productive!"
+    )
+
+    # 10. Structured Briefing Payload
+    briefing_payload = {
+        "target_date": target_date_str,
+        "timezone": user_tz,
+        "greeting": greeting,
+        "recommended_focus": recommended_focus,
+        "scheduled_items_count": len(task_blocks),
+        "calendar_events_count": len(calendar_events),
+        "overdue_count": len(overdue_tasks),
+        "upcoming_deadlines_count": len(upcoming_deadlines),
+        "unread_emails_count": unread_emails_count,
+        "gmail_status": "connected" if gmail_connected else "disconnected",
+        "gmail_account_email": gmail_account_email,
+        "calendar_status": "connected" if cal_connected else "disconnected",
+        "calendar_account_email": cal_account_email,
+        "streak_days": streak_days,
+        "completed_today_count": completed_today_count,
+        "summary_text": f"Briefing for {date_display}: {len(scheduled_items)} events/blocks, {len(overdue_tasks)} overdue, {len(upcoming_deadlines)} upcoming deadlines.",
+    }
+
+    return {
+        "briefing_payload": briefing_payload,
+        "schedule_summary": today_schedule,
+        "formatted_markdown": formatted_md,
+        "spoken_summary": spoken_summary,
+        "recommended_focus": recommended_focus,
+        "scheduled_items_count": len(task_blocks),
+        "calendar_events_count": len(calendar_events),
+        "overdue_count": len(overdue_tasks),
+        "upcoming_deadlines_count": len(upcoming_deadlines),
+        "unread_emails_count": unread_emails_count,
+        "gmail_status": "connected" if gmail_connected else "disconnected",
+        "calendar_status": "connected" if cal_connected else "disconnected",
+        "streak_days": streak_days,
+        "completed_today_count": completed_today_count,
+    }

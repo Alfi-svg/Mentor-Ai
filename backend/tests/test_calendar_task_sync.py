@@ -460,3 +460,92 @@ async def test_ensure_schedule_block_for_task_creates_and_links_schedule(test_db
     await TaskService.complete_task(db=test_db, user_id=user_id, task_id=task.id)
     await test_db.refresh(block)
     assert block.is_completed is True
+
+
+@pytest.mark.asyncio
+async def test_calendar_events_includes_deadline_tasks_automatically(test_db):
+    """Tasks with deadlines automatically appear as calendar events with [DUE] badge and is_deadline=True."""
+    from app.core.security import AuthenticatedUser
+    from app.api.v1.endpoints.calendar import list_calendar_events, list_unscheduled_tasks
+
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=False)
+    auth_user = AuthenticatedUser(id=user_id, email="student@example.com")
+
+    now = datetime.now(UTC)
+    deadline_val = now + timedelta(days=2)
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Final Project Report",
+            description="Submit PDF on portal",
+            priority="P1",
+            duration_minutes=60,
+            deadline=deadline_val,
+            scheduling_preference="unscheduled",
+        ),
+    )
+
+    start_window = now
+    end_window = now + timedelta(days=5)
+
+    events = await list_calendar_events(
+        start_time=start_window,
+        end_time=end_window,
+        include_tasks=True,
+        current_user=auth_user,
+        db=test_db,
+    )
+
+    deadline_events = [e for e in events if e.get("is_deadline") is True]
+    assert len(deadline_events) >= 1
+    d_ev = deadline_events[0]
+    assert d_ev["task_id"] == str(task.id)
+    assert d_ev["title"] == "[DUE] Final Project Report"
+    assert d_ev["priority"] == "P1"
+    assert d_ev["source"] == "task"
+
+    # Also verify list_unscheduled_tasks includes this task
+    backlog = await list_unscheduled_tasks(current_user=auth_user, db=test_db)
+    assert any(b["id"] == str(task.id) for b in backlog)
+
+
+@pytest.mark.asyncio
+async def test_calendar_events_includes_scheduled_tasks_and_deduplicates(test_db):
+    """Scheduled tasks appear on calendar with start/end time and are not duplicated."""
+    from app.core.security import AuthenticatedUser
+    from app.api.v1.endpoints.calendar import list_calendar_events
+
+    user_id = await setup_user_with_calendar(test_db, sync_enabled=False)
+    auth_user = AuthenticatedUser(id=user_id, email="student@example.com")
+
+    now = datetime.now(UTC)
+    start_t = now + timedelta(days=1, hours=2)
+    end_t = start_t + timedelta(hours=1)
+
+    task = await TaskService.create_task(
+        db=test_db,
+        user_id=user_id,
+        payload=TaskCreateRequest(
+            title="Math Problem Set 4",
+            duration_minutes=60,
+            scheduled_start=start_t,
+            scheduled_end=end_t,
+            scheduling_preference="manual",
+        ),
+    )
+
+    events = await list_calendar_events(
+        start_time=now,
+        end_time=now + timedelta(days=3),
+        include_tasks=True,
+        current_user=auth_user,
+        db=test_db,
+    )
+
+    task_events = [e for e in events if e.get("task_id") == str(task.id)]
+    assert len(task_events) == 1
+    assert task_events[0]["title"] == "Math Problem Set 4"
+    assert task_events[0]["is_deadline"] is False
+    assert task_events[0]["source"] == "task"
+

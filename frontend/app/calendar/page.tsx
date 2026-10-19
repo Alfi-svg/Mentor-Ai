@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import Link from "next/link";
 import {
+  AlertCircle,
   AlertTriangle,
   Calendar as CalendarIcon,
   CheckCircle2,
@@ -10,18 +11,26 @@ import {
   ChevronRight,
   Clock,
   ExternalLink,
+  Info,
   Layers,
+  ListPlus,
   MapPin,
   Plus,
   RefreshCw,
   Settings,
   ShieldCheck,
   Sliders,
+  Sparkles,
   Trash2,
   Unlink,
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { EmptyState } from "@/components/ui/EmptyState";
+import { ErrorState } from "@/components/ui/ErrorState";
+import { Modal } from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/ToastProvider";
 import { apiClient, ApiClientError } from "@/lib/api-client";
 import {
   CalendarEvent,
@@ -48,6 +57,13 @@ export default function CalendarWorkspacePage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [connecting, setConnecting] = useState<boolean>(false);
   const [disconnecting, setDisconnecting] = useState<boolean>(false);
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState<boolean>(false);
+  const [eventToDelete, setEventToDelete] = useState<CalendarEvent | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState<boolean>(false);
+  const [unscheduledDrawerOpen, setUnscheduledDrawerOpen] = useState<boolean>(false);
+  const [unscheduledTasks, setUnscheduledTasks] = useState<any[]>([]);
+  const [loadingUnscheduled, setLoadingUnscheduled] = useState<boolean>(false);
+  const toast = useToast();
   const [taskSyncSummary, setTaskSyncSummary] = useState<CalendarTaskSyncSummary | null>(null);
   const [conflictDate, setConflictDate] = useState<string>(
     new Date().toISOString().slice(0, 10)
@@ -102,16 +118,18 @@ export default function CalendarWorkspacePage() {
     setLoading(true);
     setError(null);
     try {
-      const [fetchedEvents, calStatus] = await Promise.all([
+      const [fetchedEvents, calStatus, unsched] = await Promise.all([
         apiClient.getCalendarEvents({
           startTime: viewStart.toISOString(),
           endTime: viewEnd.toISOString(),
           includeTasks: true,
         }),
         apiClient.getCalendarStatus().catch(() => null),
+        apiClient.getUnscheduledTasks().catch(() => []),
       ]);
       setEvents(fetchedEvents);
       if (calStatus) setStatus(calStatus);
+      if (unsched) setUnscheduledTasks(unsched);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load calendar events.");
     } finally {
@@ -153,13 +171,17 @@ export default function CalendarWorkspacePage() {
     }
   };
 
-  const handleDisconnect = async () => {
-    if (!confirm("Are you sure you want to disconnect Google Calendar?")) return;
+  const handleDisconnect = () => {
+    setDisconnectConfirmOpen(true);
+  };
+
+  const confirmDisconnect = async () => {
     setDisconnecting(true);
     setError(null);
     try {
       await apiClient.disconnectCalendar();
       setSuccessMessage("Google Calendar disconnected.");
+      toast.success("Google Calendar Disconnected", "Your Google account tokens have been revoked.");
       setStatus((prev) =>
         prev
           ? {
@@ -170,9 +192,12 @@ export default function CalendarWorkspacePage() {
             }
           : null
       );
+      setDisconnectConfirmOpen(false);
       await loadEvents();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disconnect Google Calendar.");
+      const msg = err instanceof Error ? err.message : "Failed to disconnect Google Calendar.";
+      setError(msg);
+      toast.error("Disconnection Failed", msg);
     } finally {
       setDisconnecting(false);
     }
@@ -318,17 +343,28 @@ export default function CalendarWorkspacePage() {
     }
   };
 
-  const handleDeleteEvent = async (event: CalendarEvent) => {
-    if (!confirm(`Are you sure you want to delete event "${event.title}"?`)) return;
+  const handleDeleteEvent = (event: CalendarEvent) => {
+    setEventToDelete(event);
+  };
+
+  const confirmDeleteEvent = async () => {
+    if (!eventToDelete) return;
+    setDeleteLoading(true);
     setError(null);
     try {
-      await apiClient.deleteCalendarEvent(event.id);
+      await apiClient.deleteCalendarEvent(eventToDelete.id);
       setSelectedEvent(null);
       setIsEditing(false);
       setSuccessMessage("Event deleted successfully.");
+      toast.success("Event Deleted", `"${eventToDelete.title}" has been deleted.`);
+      setEventToDelete(null);
       await loadEvents();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete event.");
+      const msg = err instanceof Error ? err.message : "Failed to delete event.";
+      setError(msg);
+      toast.error("Failed to Delete Event", msg);
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -476,6 +512,21 @@ export default function CalendarWorkspacePage() {
               </button>
             )}
 
+            {/* Unscheduled Backlog Drawer Button */}
+            <button
+              onClick={() => setUnscheduledDrawerOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-zinc-700/80 bg-zinc-800/80 px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-zinc-700 hover:text-white transition-all backdrop-blur-md"
+              title="View unscheduled tasks waiting for calendar allocation"
+            >
+              <ListPlus className="h-3.5 w-3.5 text-brand-400" />
+              <span className="hidden sm:inline">Backlog</span>
+              {unscheduledTasks.length > 0 && (
+                <span className="rounded-full bg-brand-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  {unscheduledTasks.length}
+                </span>
+              )}
+            </button>
+
             {/* Settings Drawer Button */}
             <button
               onClick={() => setIsSettingsOpen(true)}
@@ -534,11 +585,14 @@ export default function CalendarWorkspacePage() {
         )}
 
         {/* Status Alerts */}
-        {error && (
-          <div className="flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-300">
-            <AlertTriangle className="h-4 w-4 shrink-0 text-rose-400" />
-            <span>{error}</span>
-          </div>
+        {error && events.length > 0 && (
+          <ErrorState
+            compact
+            title="Connection Warning"
+            message={error}
+            onRetry={loadEvents}
+            isRetrying={loading}
+          />
         )}
 
         {successMessage && (
@@ -549,7 +603,7 @@ export default function CalendarWorkspacePage() {
         )}
 
         {/* Legend */}
-        <div className="flex items-center gap-4 text-xs text-zinc-400 px-1">
+        <div className="flex flex-wrap items-center gap-4 text-xs text-zinc-400 px-1">
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-brand-500" />
             <span>Scheduled Task</span>
@@ -557,6 +611,10 @@ export default function CalendarWorkspacePage() {
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
             <span>Google Calendar Event</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-500" />
+            <span>Task Deadline [DUE]</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="h-2.5 w-2.5 rounded-full bg-zinc-600" />
@@ -572,6 +630,17 @@ export default function CalendarWorkspacePage() {
                 <RefreshCw className="h-4 w-4 animate-spin text-brand-400" />
                 <span>Loading calendar events...</span>
               </div>
+            </div>
+          ) : error && events.length === 0 ? (
+            <div className="flex h-full items-center justify-center py-10">
+              <ErrorState
+                title="Unable to communicate with the Mentor AI backend"
+                message={error}
+                onRetry={loadEvents}
+                retryLabel="Retry Connection"
+                isRetrying={loading}
+                details={`Connection Diagnostic:\n${error}\n\nNote: If using cloud hosting (Render free tier), backends spin down after 15 minutes of inactivity and take 30-50s to wake up on the first request.`}
+              />
             </div>
           ) : viewMode === "week" ? (
             /* WEEK VIEW */
@@ -607,6 +676,7 @@ export default function CalendarWorkspacePage() {
                     <div className="flex-1 space-y-1.5 overflow-y-auto">
                       {dayEvents.map((ev) => {
                         const isTask = ev.source === "task";
+                        const isDeadline = Boolean(ev.is_deadline || ev.title.startsWith("[DUE]"));
                         const isDone = ev.title.startsWith("[DONE]");
                         return (
                           <div
@@ -622,21 +692,29 @@ export default function CalendarWorkspacePage() {
                               });
                               setIsEditing(false);
                             }}
-                            className={`group cursor-pointer rounded border p-2 text-xs transition-all hover:scale-[1.02] ${
+                            className={`group cursor-pointer rounded-xl border p-2 text-xs transition-all hover:scale-[1.02] shadow-sm ${
                               isDone
                                 ? "border-zinc-700/60 bg-zinc-800/50 text-zinc-400 line-through"
+                                : isDeadline
+                                ? "border-amber-500/40 bg-amber-500/10 text-amber-100 hover:border-amber-400"
                                 : isTask
-                                ? "border-brand-500/40 bg-brand-500/10 text-white hover:border-brand-500"
-                                : "border-emerald-500/40 bg-emerald-500/10 text-white hover:border-emerald-500"
+                                ? "border-brand-500/40 bg-brand-500/10 text-white hover:border-brand-400"
+                                : "border-emerald-500/40 bg-emerald-500/10 text-white hover:border-emerald-400"
                             }`}
                           >
                             <div className="flex items-center justify-between gap-1 mb-1">
                               <span
-                                className={`text-[10px] font-bold uppercase rounded px-1.5 py-0.2 ${
-                                  isTask ? "bg-brand-600 text-white" : "bg-emerald-600 text-white"
+                                className={`text-[10px] font-bold uppercase rounded px-1.5 py-0.5 ${
+                                  isDone
+                                    ? "bg-zinc-700 text-zinc-300"
+                                    : isDeadline
+                                    ? "bg-amber-600 text-white"
+                                    : isTask
+                                    ? "bg-brand-600 text-white"
+                                    : "bg-emerald-600 text-white"
                                 }`}
                               >
-                                {isTask ? "Task" : "GCal"}
+                                {isDone ? "Done" : isDeadline ? "Due" : isTask ? "Task" : "GCal"}
                               </span>
                               <span className="text-[10px] text-zinc-400 font-mono">
                                 {new Date(ev.start_time).toLocaleTimeString([], {
@@ -679,6 +757,7 @@ export default function CalendarWorkspacePage() {
               <div className="space-y-2">
                 {getEventsForDay(currentDate).map((ev) => {
                   const isTask = ev.source === "task";
+                  const isDeadline = Boolean(ev.is_deadline || ev.title.startsWith("[DUE]"));
                   const isDone = ev.title.startsWith("[DONE]");
                   return (
                     <div
@@ -694,24 +773,32 @@ export default function CalendarWorkspacePage() {
                         });
                         setIsEditing(false);
                       }}
-                      className={`cursor-pointer rounded-lg border p-4 text-xs transition-all hover:border-zinc-600 ${
+                      className={`cursor-pointer rounded-xl border p-4 text-xs transition-all hover:border-zinc-500 shadow-sm ${
                         isDone
                           ? "border-zinc-800 bg-zinc-900/40 text-zinc-400"
+                          : isDeadline
+                          ? "border-amber-500/40 bg-amber-500/10 text-amber-100 hover:border-amber-400"
                           : isTask
-                          ? "border-brand-500/30 bg-brand-500/10 text-white"
-                          : "border-emerald-500/30 bg-emerald-500/10 text-white"
+                          ? "border-brand-500/30 bg-brand-500/10 text-white hover:border-brand-400"
+                          : "border-emerald-500/30 bg-emerald-500/10 text-white hover:border-emerald-400"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2 mb-1.5">
                         <div className="flex items-center gap-2">
                           <span
                             className={`text-[10px] font-bold uppercase rounded px-2 py-0.5 ${
-                              isTask ? "bg-brand-600 text-white" : "bg-emerald-600 text-white"
+                              isDone
+                                ? "bg-zinc-700 text-zinc-300"
+                                : isDeadline
+                                ? "bg-amber-600 text-white"
+                                : isTask
+                                ? "bg-brand-600 text-white"
+                                : "bg-emerald-600 text-white"
                             }`}
                           >
-                            {isTask ? "Task" : "Google Calendar"}
+                            {isDone ? "Done" : isDeadline ? "Deadline" : isTask ? "Task" : "Google Calendar"}
                           </span>
-                          <h3 className={`text-sm font-bold ${isDone ? "line-through text-zinc-400" : "text-white"}`}>
+                          <h3 className={`text-sm font-bold ${isDone ? "line-through text-zinc-400" : isDeadline ? "text-amber-100" : "text-white"}`}>
                             {ev.title}
                           </h3>
                         </div>
@@ -791,28 +878,37 @@ export default function CalendarWorkspacePage() {
                       </div>
 
                       <div className="space-y-1 mt-1 overflow-y-auto max-h-[60px]">
-                        {dayEvents.slice(0, 2).map((ev) => (
-                          <div
-                            key={ev.id}
-                            onClick={() => {
-                              setSelectedEvent(ev);
-                              setEditForm({
-                                title: ev.title,
-                                description: ev.description || "",
-                                location: ev.location || "",
-                                start_time: new Date(ev.start_time).toISOString().slice(0, 16),
-                                end_time: new Date(ev.end_time).toISOString().slice(0, 16),
-                              });
-                            }}
-                            className={`cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium truncate ${
-                              ev.source === "task"
-                                ? "bg-brand-600/30 text-brand-200"
-                                : "bg-emerald-600/30 text-emerald-200"
-                            }`}
-                          >
-                            {ev.title}
-                          </div>
-                        ))}
+                        {dayEvents.slice(0, 2).map((ev) => {
+                          const isTask = ev.source === "task";
+                          const isDeadline = Boolean(ev.is_deadline || ev.title.startsWith("[DUE]"));
+                          const isDone = ev.title.startsWith("[DONE]");
+                          return (
+                            <div
+                              key={ev.id}
+                              onClick={() => {
+                                setSelectedEvent(ev);
+                                setEditForm({
+                                  title: ev.title,
+                                  description: ev.description || "",
+                                  location: ev.location || "",
+                                  start_time: new Date(ev.start_time).toISOString().slice(0, 16),
+                                  end_time: new Date(ev.end_time).toISOString().slice(0, 16),
+                                });
+                              }}
+                              className={`cursor-pointer rounded px-1.5 py-0.5 text-[10px] font-medium truncate ${
+                                isDone
+                                  ? "bg-zinc-800 text-zinc-400 line-through"
+                                  : isDeadline
+                                  ? "bg-amber-500/20 text-amber-200 border border-amber-500/30"
+                                  : isTask
+                                  ? "bg-brand-600/30 text-brand-200"
+                                  : "bg-emerald-600/30 text-emerald-200"
+                              }`}
+                            >
+                              {ev.title}
+                            </div>
+                          );
+                        })}
                         {dayEvents.length > 2 && (
                           <span className="text-[9px] text-zinc-400 font-mono block">
                             +{dayEvents.length - 2} more
@@ -1348,6 +1444,175 @@ export default function CalendarWorkspacePage() {
             </div>
           </div>
         )}
+
+        {/* Unscheduled Tasks Backlog Drawer */}
+        {unscheduledDrawerOpen && (
+          <div className="fixed inset-0 z-50 flex justify-end bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+            <div
+              className="fixed inset-0"
+              onClick={() => setUnscheduledDrawerOpen(false)}
+            />
+            <div className="relative z-10 w-full max-w-md bg-[#0c1429] border-l border-[#1e2f57] p-6 shadow-2xl flex flex-col h-full animate-in slide-in-from-right duration-200">
+              <div className="flex items-center justify-between border-b border-[#1e2f57] pb-4 mb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-brand-500/10 border border-brand-500/20 flex items-center justify-center text-brand-400">
+                    <ListPlus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-base font-bold text-white tracking-tight">Task Backlog</h2>
+                    <p className="text-xs text-slate-400">
+                      {unscheduledTasks.length} {unscheduledTasks.length === 1 ? "task" : "tasks"} waiting for calendar time blocks
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUnscheduledDrawerOpen(false)}
+                  className="rounded-lg p-1.5 text-slate-400 hover:text-white hover:bg-white/10 transition"
+                  aria-label="Close backlog drawer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {loadingUnscheduled ? (
+                  <div className="flex items-center justify-center py-16 text-xs text-slate-400 gap-2">
+                    <RefreshCw className="w-4 h-4 animate-spin text-brand-400" />
+                    <span>Loading backlog...</span>
+                  </div>
+                ) : unscheduledTasks.length === 0 ? (
+                  <EmptyState
+                    icon={<CheckCircle2 className="w-6 h-6 text-emerald-400" />}
+                    title="All Tasks Scheduled"
+                    description="You have no pending unscheduled tasks. Any task created with a deadline or allocated by Day Planner will appear on your calendar automatically."
+                  />
+                ) : (
+                  unscheduledTasks.map((task) => (
+                    <div
+                      key={task.id}
+                      className="rounded-xl border border-[#1e2f57] bg-[#101b38]/60 p-4 transition-all hover:border-[#2f4984]"
+                    >
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                              task.priority === "P1"
+                                ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                : task.priority === "P2"
+                                ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                                : task.priority === "P3"
+                                ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
+                                : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+                            }`}
+                          >
+                            {task.priority}
+                          </span>
+                          <span className="text-xs font-semibold text-white">
+                            {task.title}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                          {task.duration_minutes || 45}m
+                        </span>
+                      </div>
+
+                      {task.description && (
+                        <p className="text-xs text-slate-300 line-clamp-2 mb-2">
+                          {task.description}
+                        </p>
+                      )}
+
+                      <div className="flex items-center justify-between pt-2 border-t border-[#1e2f57]/80 text-[11px]">
+                        {task.deadline ? (
+                          <span className="text-amber-300 flex items-center gap-1 font-mono text-[10px]">
+                            <Clock className="w-3 h-3" />
+                            Due: {new Date(task.deadline).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        ) : (
+                          <span className="text-slate-500 text-[10px]">No deadline</span>
+                        )}
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCreateForm({
+                                title: task.title,
+                                description: task.description || "",
+                                start_time: new Date().toISOString().slice(0, 16),
+                                end_time: new Date(Date.now() + (task.duration_minutes || 45) * 60 * 1000).toISOString().slice(0, 16),
+                                is_all_day: false,
+                                location: "",
+                              });
+                              setUnscheduledDrawerOpen(false);
+                              setIsCreateOpen(true);
+                            }}
+                            className="rounded-lg bg-[#625BFF]/20 border border-[#625BFF]/30 px-2.5 py-1 text-[11px] font-semibold text-[#8B5CF6] hover:bg-[#625BFF]/30 transition"
+                          >
+                            Schedule Block
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="pt-4 border-t border-[#1e2f57] flex items-center justify-between">
+                <Link
+                  href="/tasks"
+                  className="text-xs text-slate-400 hover:text-white flex items-center gap-1 transition"
+                  onClick={() => setUnscheduledDrawerOpen(false)}
+                >
+                  <span>Open Task Manager</span>
+                  <ExternalLink className="w-3 h-3" />
+                </Link>
+                <Link
+                  href="/planner"
+                  className="rounded-lg bg-[#625BFF] hover:bg-[#5248E5] text-white px-3 py-1.5 text-xs font-semibold shadow-sm transition"
+                  onClick={() => setUnscheduledDrawerOpen(false)}
+                >
+                  AI Day Planner
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Disconnect Google Calendar Confirmation Dialog */}
+        <ConfirmDialog
+          isOpen={disconnectConfirmOpen}
+          title="Disconnect Google Calendar"
+          description="Are you sure you want to disconnect Google Calendar? External synchronization will be suspended and stored authentication tokens will be securely removed."
+          confirmText="Disconnect Calendar"
+          cancelText="Keep Connected"
+          variant="danger"
+          isLoading={disconnecting}
+          onConfirm={confirmDisconnect}
+          onCancel={() => setDisconnectConfirmOpen(false)}
+        />
+
+        {/* Delete Event Confirmation Dialog */}
+        <ConfirmDialog
+          isOpen={eventToDelete !== null}
+          title="Delete Calendar Event"
+          description={
+            eventToDelete ? (
+              <span>
+                Are you sure you want to delete event{" "}
+                <strong className="text-white">&quot;{eventToDelete.title}&quot;</strong>? This
+                will also remove the event from Google Calendar if connected.
+              </span>
+            ) : null
+          }
+          confirmText="Delete Event"
+          cancelText="Keep Event"
+          variant="danger"
+          isLoading={deleteLoading}
+          onConfirm={confirmDeleteEvent}
+          onCancel={() => setEventToDelete(null)}
+        />
       </div>
     </AppShell>
   );

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.copilot import (
+    CopilotDailyBriefing,
     CopilotMessageRequest,
     CopilotNavigationTarget,
     CopilotResponse,
@@ -28,6 +29,7 @@ from app.services.copilot.learning import (
 from app.services.copilot.search import EducationalSearchService
 from app.services.copilot.system_prompt import COPILOT_SYSTEM_PROMPT
 from app.services.copilot.tools import (
+    get_daily_briefing,
     get_overdue_tasks,
     get_schedule_for_date,
     get_today_schedule,
@@ -59,11 +61,26 @@ class CopilotService:
         email_draft: EmailDraftPreview | None = None
         navigation: CopilotNavigationTarget | None = None
         accountability_data = None
+        daily_briefing: CopilotDailyBriefing | None = None
+        spoken_reply: str | None = None
         reply = ""
         verification_status = "verified"
 
+        # CASE 0: Proactive Daily Briefing
+        if intent == "daily_briefing":
+            briefing_res = await get_daily_briefing(db=db, user_id=user_id, user_tz_str=user_tz)
+            daily_briefing = CopilotDailyBriefing(**briefing_res["briefing_payload"])
+            schedule_summary = briefing_res.get("schedule_summary")
+            reply = briefing_res.get("formatted_markdown", "")
+            spoken_reply = briefing_res.get("spoken_summary", "")
+            navigation = CopilotNavigationTarget(
+                route="/planner",
+                params={},
+                label="Open AI Daily Planner",
+            )
+
         # CASE 1: Schedule or Calendar Inquiry
-        if intent == "schedule_inquiry":
+        elif intent == "schedule_inquiry":
             target_date_str = req.target_date
             if not target_date_str:
                 if "tomorrow" in lower:
@@ -211,12 +228,14 @@ class CopilotService:
 
         return CopilotResponse(
             reply=bounded_reply,
+            spoken_reply=spoken_reply,
             intent=intent,
             schedule_summary=schedule_summary,
             resources=resources,
             email_draft=email_draft,
             navigation=navigation,
             accountability=accountability_data,
+            daily_briefing=daily_briefing,
             code_line_count=max_lines,
             verification_status=verification_status,
         )
@@ -224,6 +243,15 @@ class CopilotService:
     @classmethod
     def _classify_intent(cls, lower: str) -> str:
         """Classify user natural language intent with educational prioritization."""
+        # 0. Proactive Daily Briefing / Focus Inquiry
+        if any(term in lower for term in [
+            "brief me", "daily briefing", "what should i focus on", "focus on first",
+            "focus first", "what does my day look", "what's my day look", "whats my day look",
+            "morning briefing", "today's briefing", "todays briefing", "overview of my day",
+            "start my day", "prepare my day", "how is my day looking", "how does my day look"
+        ]):
+            return "daily_briefing"
+
         # 1. Schedule inquiry
         if any(term in lower for term in ["today's schedule", "todays schedule", "my schedule", "what do i have today", "give me today", "schedule today", "daily schedule", "today plan", "plan today", "schedule for tomorrow"]):
             return "schedule_inquiry"

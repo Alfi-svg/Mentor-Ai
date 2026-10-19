@@ -30,9 +30,22 @@ import {
   ValidationErrorItem,
 } from "./types";
 
-const API_BASE_URL = (
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"
-).replace(/\/+$/, "");
+export function getApiBaseUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+  if (configured && configured.trim() !== "") {
+    return configured.trim().replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    // Auto-fallback to canonical production backend URL when deployed on cloud/Vercel
+    if (host && host !== "localhost" && host !== "127.0.0.1") {
+      return "https://mentor-ai-api-onzd.onrender.com/api/v1";
+    }
+  }
+  return "http://localhost:8000/api/v1";
+}
+
+const API_BASE_URL = getApiBaseUrl();
 
 export class ApiClientError extends Error {
   public statusCode: number;
@@ -78,7 +91,7 @@ async function request<T>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
-  const url = `${API_BASE_URL}${endpoint}`;
+  const url = `${getApiBaseUrl()}${endpoint}`;
   const headers = new Headers(options.headers || {});
 
   if (!headers.has("Accept")) {
@@ -96,13 +109,35 @@ async function request<T>(
     headers.set("Content-Type", "application/json");
   }
 
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      ...options,
-      headers,
-    });
-  } catch (networkError) {
+  // Bounded retry for idempotent GET requests to tolerate Render cold starts
+  const isIdempotent = !options.method || options.method === "GET" || options.method === "HEAD";
+  const maxAttempts = isIdempotent ? 2 : 1;
+  let attempt = 0;
+  let res: Response | null = null;
+
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      res = await fetch(url, {
+        ...options,
+        headers,
+      });
+      break;
+    } catch (networkError) {
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      throw new ApiClientError({
+        status_code: 0,
+        error_code: "NETWORK_ERROR",
+        detail:
+          "Unable to communicate with the Mentor AI backend. Check if the server is running.",
+      });
+    }
+  }
+
+  if (!res) {
     throw new ApiClientError({
       status_code: 0,
       error_code: "NETWORK_ERROR",
@@ -179,6 +214,15 @@ function normalizeTask(raw: any): Task {
 // -----------------------------------------------------------------------------
 
 export const apiClient = {
+  // --- System Health & Diagnostics ---
+  async getHealth(): Promise<{ status: string; version: string; environment: string; ai_provider: string; timestamp: string }> {
+    return request<{ status: string; version: string; environment: string; ai_provider: string; timestamp: string }>("/health", { method: "GET" });
+  },
+
+  async getReadiness(): Promise<{ status: string; database: string; ai_service: string; details: Record<string, unknown>; timestamp: string }> {
+    return request<{ status: string; database: string; ai_service: string; details: Record<string, unknown>; timestamp: string }>("/health/ready", { method: "GET" });
+  },
+
   // --- Auth ---
   async signup(email: string, password: string): Promise<AuthResponse> {
     const data = await request<{
@@ -496,6 +540,30 @@ export const apiClient = {
     return request<import("./types").CalendarTaskSyncSummary>("/calendar/sync/tasks", {
       method: "GET",
     });
+  },
+
+  async getUnscheduledTasks(): Promise<Array<{
+    id: string;
+    title: string;
+    description: string | null;
+    priority: TaskPriority;
+    status: TaskStatus;
+    duration_minutes: number;
+    deadline: string | null;
+    energy_level: string;
+    tags: string[];
+  }>> {
+    return request<Array<{
+      id: string;
+      title: string;
+      description: string | null;
+      priority: TaskPriority;
+      status: TaskStatus;
+      duration_minutes: number;
+      deadline: string | null;
+      energy_level: string;
+      tags: string[];
+    }>>("/calendar/unscheduled-tasks", { method: "GET" });
   },
 
   async syncCalendar(

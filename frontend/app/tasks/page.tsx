@@ -26,6 +26,8 @@ import {
   Zap,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/components/ui/ToastProvider";
 import { apiClient, ApiClientError } from "@/lib/api-client";
 import {
   Task,
@@ -66,6 +68,9 @@ export default function TasksPage() {
   const [successFeedback, setSuccessFeedback] = useState<string | null>(null);
   const [autoSchedulingId, setAutoSchedulingId] = useState<string | null>(null);
   const [syncingTaskId, setSyncingTaskId] = useState<string | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<Task | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const toast = useToast();
 
   // Quick Schedule Modal State
   const [schedulingTask, setSchedulingTask] = useState<Task | null>(null);
@@ -151,17 +156,26 @@ export default function TasksPage() {
     }
   };
 
-  const handleDeleteTask = async (id: string) => {
-    if (!confirm("Are you sure you want to permanently delete this task?")) return;
+  const handleDeleteTask = (task: Task) => {
+    setTaskToDelete(task);
+  };
+
+  const confirmDeleteTask = async () => {
+    if (!taskToDelete) return;
+    setDeleteLoading(true);
     try {
-      await apiClient.deleteTask(id);
-      setTasks((prev) => prev.filter((t) => t.id !== id));
+      await apiClient.deleteTask(taskToDelete.id);
+      setTasks((prev) => prev.filter((t) => t.id !== taskToDelete.id));
+      toast.success("Task Deleted", `"${taskToDelete.title}" has been permanently deleted.`);
+      setTaskToDelete(null);
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setError(err.message);
+        toast.error("Failed to Delete Task", err.message);
       } else {
-        setError("Failed to delete task.");
+        toast.error("Failed to Delete Task", "Failed to delete task.");
       }
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -788,7 +802,7 @@ export default function TasksPage() {
 
                     {/* Delete */}
                     <button
-                      onClick={() => handleDeleteTask(task.id)}
+                      onClick={() => handleDeleteTask(task)}
                       className="p-1.5 text-zinc-500 hover:text-rose-400 rounded hover:bg-zinc-800 transition-colors"
                       title="Permanently delete task"
                     >
@@ -1327,6 +1341,27 @@ export default function TasksPage() {
             </div>
           </div>
         )}
+
+        {/* Delete Task Confirmation Dialog */}
+        <ConfirmDialog
+          isOpen={taskToDelete !== null}
+          title="Delete Task"
+          description={
+            taskToDelete ? (
+              <span>
+                Are you sure you want to permanently delete{" "}
+                <strong className="text-white">&quot;{taskToDelete.title}&quot;</strong>? This
+                action cannot be undone.
+              </span>
+            ) : null
+          }
+          confirmText="Delete Task"
+          cancelText="Keep Task"
+          variant="danger"
+          isLoading={deleteLoading}
+          onConfirm={confirmDeleteTask}
+          onCancel={() => setTaskToDelete(null)}
+        />
       </div>
     </AppShell>
   );

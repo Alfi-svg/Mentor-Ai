@@ -146,6 +146,7 @@ export interface CalendarEvent {
   priority?: string | null;
   task_status?: string | null;
   calendar_sync_status?: CalendarSyncStatus | string | null;
+  is_deadline?: boolean;
 }
 
 export interface CalendarSyncResult {
@@ -697,6 +698,35 @@ export interface StudentAccountabilitySummary {
   } | null;
 }
 
+export interface CopilotRecommendedFocus {
+  task_id?: string | null;
+  title: string;
+  priority?: string | null;
+  reason: string;
+  action_type: "overdue" | "scheduled_block" | "upcoming_deadline" | "backlog" | "all_clear" | string;
+  scheduled_time?: string | null;
+  deadline?: string | null;
+}
+
+export interface CopilotDailyBriefing {
+  target_date: string;
+  timezone: string;
+  greeting?: string;
+  recommended_focus?: CopilotRecommendedFocus | null;
+  scheduled_items_count: number;
+  calendar_events_count: number;
+  overdue_count: number;
+  upcoming_deadlines_count: number;
+  unread_emails_count: number;
+  gmail_status: "connected" | "disconnected" | "error" | string;
+  gmail_account_email?: string | null;
+  calendar_status: "connected" | "disconnected" | string;
+  calendar_account_email?: string | null;
+  streak_days: number;
+  completed_today_count: number;
+  summary_text: string;
+}
+
 export interface CopilotResponse {
   reply: string;
   spoken_reply?: string | null;
@@ -712,6 +742,7 @@ export interface CopilotResponse {
   approval_id?: string | null;
   navigation?: CopilotNavigationTarget | null;
   accountability?: StudentAccountabilitySummary | null;
+  daily_briefing?: CopilotDailyBriefing | null;
   code_line_count?: number | null;
   verification_status: "verified" | "clarification_needed" | "unsupported" | "error" | "unconfigured";
 }

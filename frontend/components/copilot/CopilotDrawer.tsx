@@ -25,10 +25,12 @@ import {
   X,
   Copy,
   MessageSquare,
+  Square,
 } from "lucide-react";
 import { CopilotVoiceOrb, OrbState } from "./CopilotVoiceOrb";
 import { CopilotMarkdown } from "./CopilotMarkdown";
 import { apiClient } from "@/lib/api-client";
+import { detectSupportedAudioMime, stopAllMediaTracks } from "@/lib/audio-recorder";
 import {
   CopilotMessageRequest,
   CopilotPreferences,
@@ -54,6 +56,34 @@ interface CopilotDrawerProps {
 }
 
 const DEFAULT_VOICES: CopilotVoiceOption[] = [
+  {
+    id: "masculine",
+    name: "Masculine",
+    perceived_sound: "masculine",
+    description: "Natural, balanced masculine-sounding voice with clear articulation.",
+    sample_text: "Hello! I am ready to review your schedule, master concepts, or draft email replies.",
+  },
+  {
+    id: "feminine",
+    name: "Feminine",
+    perceived_sound: "feminine",
+    description: "Natural, clear feminine-sounding voice with a warm, supportive tone.",
+    sample_text: "Hello! I am Mentor, your educational copilot. How can I help with your studies today?",
+  },
+  {
+    id: "deep_vocal",
+    name: "Deep Vocal",
+    perceived_sound: "masculine",
+    description: "Lower-pitched, rich, authoritative vocal tone for deep focus.",
+    sample_text: "Welcome back. Let us review your tasks and keep your study streak strong.",
+  },
+  {
+    id: "natural_vocal",
+    name: "Natural Vocal",
+    perceived_sound: "feminine",
+    description: "Distinct, conversational voice with a balanced and versatile tone.",
+    sample_text: "Good morning! You have scheduled focus blocks and two academic deadlines today.",
+  },
   {
     id: "nova",
     name: "Nova",
@@ -115,8 +145,12 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
   // Recording via MediaRecorder (for Gemini multimodal audio STT)
   const [isRecordingMedia, setIsRecordingMedia] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<any>(null);
+  const isStartingRecordingRef = useRef<boolean>(false);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -136,6 +170,8 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
   // Quick suggestion prompts
   const samplePrompts = [
+    "Brief me on my day",
+    "What should I focus on first?",
     "amar ajker task ki ki?",
     "ajke amar ki ki event ache?",
     "notun mail ashche?",
@@ -244,6 +280,21 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
 
     return () => {
       stopSpeaking();
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        try {
+          mediaRecorderRef.current.ondataavailable = null;
+          mediaRecorderRef.current.onstop = null;
+          mediaRecorderRef.current.stop();
+        } catch {
+          // ignore
+        }
+      }
+      stopAllMediaTracks(mediaStreamRef.current);
+      mediaStreamRef.current = null;
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -278,8 +329,47 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     setPreviewingVoiceId(null);
   };
 
+  const stopListening = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const cancelListening = () => {
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    audioChunksRef.current = [];
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      try {
+        mediaRecorderRef.current.ondataavailable = null;
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      } catch {
+        // ignore
+      }
+    }
+    stopAllMediaTracks(mediaStreamRef.current);
+    mediaStreamRef.current = null;
+    setIsRecordingMedia(false);
+    setOrbState("idle");
+    setRecordingSeconds(0);
+  };
+
   const handleSwitchMode = (mode: "text" | "voice") => {
     stopSpeaking();
+    if (isRecordingMedia) {
+      cancelListening();
+    }
     setInteractionMode(mode);
     setErrorMessage(null);
     if (mode === "text") {
@@ -342,7 +432,7 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     }
   };
 
-  const speakTextFallback = (text: string) => {
+  const speakTextFallback = (text: string, voiceId?: string) => {
     if (isVoiceMuted || !synthRef.current) return;
     stopSpeaking();
 
@@ -352,8 +442,39 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
       .replace(/\n+/g, ". ");
 
     const utterance = new SpeechSynthesisUtterance(plainText);
-    utterance.rate = 1.05;
-    utterance.pitch = 1.0;
+    const activeVoicePreset = (voiceId || selectedVoice).toLowerCase();
+
+    // Map acoustic pitch and rate based on selected voice preset
+    if (activeVoicePreset === "deep_vocal" || activeVoicePreset === "onyx") {
+      utterance.pitch = 0.75; // noticeably lower, deeper vocal tone
+      utterance.rate = 0.95;
+    } else if (activeVoicePreset === "feminine" || activeVoicePreset === "nova") {
+      utterance.pitch = 1.05;
+      utterance.rate = 1.0;
+    } else if (activeVoicePreset === "masculine" || activeVoicePreset === "echo") {
+      utterance.pitch = 1.0;
+      utterance.rate = 1.0;
+    } else {
+      // natural_vocal / shimmer / alloy
+      utterance.pitch = 1.0;
+      utterance.rate = 1.0;
+    }
+
+    // Try to find matching system voice if loaded
+    const systemVoices = synthRef.current.getVoices?.() || [];
+    if (systemVoices.length > 0) {
+      if (activeVoicePreset === "feminine" || activeVoicePreset === "nova" || activeVoicePreset === "shimmer") {
+        const femaleVoice = systemVoices.find((v) =>
+          /female|woman|samantha|victoria|zira|karen/i.test(v.name)
+        );
+        if (femaleVoice) utterance.voice = femaleVoice;
+      } else if (activeVoicePreset === "masculine" || activeVoicePreset === "echo" || activeVoicePreset === "deep_vocal" || activeVoicePreset === "onyx") {
+        const maleVoice = systemVoices.find((v) =>
+          /male|man|daniel|alex|david|george/i.test(v.name)
+        );
+        if (maleVoice) utterance.voice = maleVoice;
+      }
+    }
 
     utterance.onstart = () => {
       setIsSpeaking(true);
@@ -373,112 +494,146 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     synthRef.current.speak(utterance);
   };
 
-  // Toggle voice recording (Gemini MediaRecorder multimodal STT preferred, Web Speech API fallback)
+  // Toggle voice recording (Gemini MediaRecorder multimodal STT preferred with cross-platform MIME detection)
   const toggleListening = async () => {
     if (orbState === "listening" || isRecordingMedia) {
-      // Stop recording
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-        mediaRecorderRef.current.stop();
-      }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {
-          // ignore
-        }
-      }
-      setIsRecordingMedia(false);
-      setOrbState("idle");
+      stopListening();
       return;
     }
+
+    if (isStartingRecordingRef.current) return;
+    isStartingRecordingRef.current = true;
 
     stopSpeaking();
     setErrorMessage(null);
     setInteractionMode("voice");
-    setOrbState("listening");
+    setRecordingSeconds(0);
 
-    // Try MediaRecorder for Gemini multimodal audio STT
-    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    // Verify browser support for mediaDevices
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      isStartingRecordingRef.current = false;
+      setOrbState("error");
+      setErrorMessage("Microphone access is not supported by your browser or connection is not secure (HTTPS).");
+      return;
+    }
+
+    try {
+      setOrbState("listening");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const supported = detectSupportedAudioMime();
+      let recorder: MediaRecorder;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioChunksRef.current = [];
-        const mediaRecorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = mediaRecorder;
+        recorder = supported.mimeType
+          ? new MediaRecorder(stream, { mimeType: supported.mimeType })
+          : new MediaRecorder(stream);
+      } catch {
+        recorder = new MediaRecorder(stream);
+      }
 
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-            audioChunksRef.current.push(e.data);
-          }
-        };
+      mediaRecorderRef.current = recorder;
 
-        mediaRecorder.onstop = async () => {
-          stream.getTracks().forEach((track) => track.stop());
-          setIsRecordingMedia(false);
-          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          audioChunksRef.current.push(e.data);
+        }
+      };
 
-          if (audioBlob.size < 64) {
-            setOrbState("idle");
-            setErrorMessage("Audio recording is empty or too short. Please speak clearly and try again.");
-            return;
-          }
+      recorder.onstop = async () => {
+        stopAllMediaTracks(mediaStreamRef.current);
+        mediaStreamRef.current = null;
+        setIsRecordingMedia(false);
 
-          setOrbState("thinking");
-          try {
-            const res = await apiClient.copilot.transcribeAudio(audioBlob, "speech.webm");
-            if (res.transcript && res.transcript.trim()) {
-              const spokenWords = res.transcript.trim();
-              setInputText(spokenWords);
-              if (reviewBeforeSend) {
-                setOrbState("idle");
-                setTranscriptNotice("Transcript captured via Gemini! Review and edit your prompt below, then press Enter or Send.");
-                setTimeout(() => {
-                  textInputRef.current?.focus();
-                }, 50);
-                return;
-              } else {
-                handleSend(spokenWords, true);
-                return;
-              }
-            } else {
-              setErrorMessage("No clear speech recognized. Please try speaking again.");
-            }
-          } catch (transcribeErr: any) {
-            console.warn("Backend transcription unavailable, falling back to Web Speech API:", transcribeErr);
-            if (recognitionRef.current) {
-              setTranscriptNotice("Switched to browser speech recognition. Speak your message:");
-              setOrbState("listening");
-              try {
-                recognitionRef.current.start();
-                return;
-              } catch (e) {
-                console.warn("Web Speech API fallback error:", e);
-              }
-            }
-            setErrorMessage(transcribeErr?.message || "Speech transcription failed. Please try again.");
-          }
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current);
+          recordingTimerRef.current = null;
+        }
+
+        const rawMime = recorder.mimeType || supported.mimeType || "audio/webm";
+        const actualMime = rawMime.split(";")[0].trim().toLowerCase();
+        let ext = supported.extension;
+        if (actualMime.includes("mp4")) ext = "mp4";
+        else if (actualMime.includes("aac")) ext = "aac";
+        else if (actualMime.includes("ogg")) ext = "ogg";
+        else if (actualMime.includes("wav")) ext = "wav";
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: actualMime });
+
+        if (audioBlob.size < 64) {
           setOrbState("idle");
-        };
+          setErrorMessage("Audio recording is empty or too short. Please speak clearly into your microphone.");
+          return;
+        }
 
-        mediaRecorder.start();
-        setIsRecordingMedia(true);
-        return;
-      } catch (err: any) {
-        console.warn("MediaRecorder mic access error, attempting Web Speech API fallback:", err);
+        setOrbState("thinking");
+        try {
+          const res = await apiClient.copilot.transcribeAudio(audioBlob, `speech.${ext}`);
+          if (res.transcript && res.transcript.trim()) {
+            const spokenWords = res.transcript.trim();
+            setInputText(spokenWords);
+            if (reviewBeforeSend) {
+              setOrbState("idle");
+              setTranscriptNotice("Transcript captured via Gemini! Review and edit your prompt below, then press Enter or Send.");
+              setTimeout(() => {
+                textInputRef.current?.focus();
+              }, 50);
+              return;
+            } else {
+              handleSend(spokenWords, true);
+              return;
+            }
+          } else {
+            setErrorMessage("No clear speech recognized. Please try speaking again.");
+          }
+        } catch (transcribeErr: any) {
+          console.warn("Gemini transcription error:", transcribeErr);
+          setErrorMessage(transcribeErr?.message || "Speech transcription failed. Please try again.");
+        }
+        setOrbState("idle");
+      };
+
+      recorder.onerror = () => {
+        stopAllMediaTracks(mediaStreamRef.current);
+        mediaStreamRef.current = null;
+        setIsRecordingMedia(false);
+        setOrbState("error");
+        setErrorMessage("Microphone recording error occurred. Please try again.");
+      };
+
+      recorder.start(250);
+      setIsRecordingMedia(true);
+
+      let elapsed = 0;
+      recordingTimerRef.current = setInterval(() => {
+        elapsed += 1;
+        setRecordingSeconds(elapsed);
+        if (elapsed >= 60) {
+          stopListening();
+        }
+      }, 1000);
+    } catch (err: any) {
+      stopAllMediaTracks(mediaStreamRef.current);
+      mediaStreamRef.current = null;
+      setIsRecordingMedia(false);
+      setOrbState("error");
+      if (err?.name === "NotAllowedError" || err?.name === "PermissionDeniedError") {
+        setErrorMessage("Microphone permission denied. Please allow microphone access in your browser settings.");
+      } else if (err?.name === "NotFoundError" || err?.name === "DevicesNotFoundError") {
+        setErrorMessage("No microphone detected. Please connect an audio input device.");
+      } else {
+        setErrorMessage(err?.message || "Could not access microphone.");
       }
+    } finally {
+      isStartingRecordingRef.current = false;
     }
-
-    // Web Speech API fallback
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.start();
-        return;
-      } catch (err: any) {
-        console.warn("Web Speech API error:", err);
-      }
-    }
-
-    setOrbState("error");
-    setErrorMessage("Could not access microphone. Please ensure microphone permissions are granted.");
   };
 
   const handleSend = async (messageToSend?: string, wasSpoken?: boolean) => {
@@ -604,6 +759,11 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
   };
 
   const handlePreviewVoice = async (voice: CopilotVoiceOption) => {
+    if (previewingVoiceId === voice.id) {
+      stopSpeaking();
+      return;
+    }
+
     stopSpeaking();
     setPreviewingVoiceId(voice.id);
     setOrbState("speaking");
@@ -622,14 +782,14 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
       };
 
       audio.onerror = () => {
-        speakTextFallback(voice.sample_text);
+        speakTextFallback(voice.sample_text, voice.id);
         setPreviewingVoiceId(null);
       };
 
       await audio.play();
     } catch (err) {
       console.warn("OpenAI TTS preview failed, using speech synthesis fallback:", err);
-      speakTextFallback(voice.sample_text);
+      speakTextFallback(voice.sample_text, voice.id);
       setPreviewingVoiceId(null);
     }
   };
@@ -676,6 +836,12 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
     const url = query ? `${target.route}?${query}` : target.route;
     router.push(url);
     onClose();
+  };
+
+  const formatSeconds = (sec: number) => {
+    const mins = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${mins}:${s < 10 ? "0" : ""}${s}`;
   };
 
   if (!isOpen) return null;
@@ -815,53 +981,74 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {availableVoices.map((voice) => {
-                const isSelected = selectedVoice === voice.id;
-                return (
-                  <div
-                    key={voice.id}
-                    className={`rounded-lg border p-2.5 transition-all flex flex-col justify-between ${
-                      isSelected
-                        ? "border-indigo-500 bg-indigo-500/10 shadow-sm"
-                        : "border-zinc-800 bg-zinc-950/70 hover:border-zinc-700"
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-white">{voice.name}</span>
-                        <span className="text-[10px] uppercase font-bold text-zinc-400 bg-zinc-800 px-1.5 py-0.5 rounded">
-                          {voice.perceived_sound}
-                        </span>
+              {availableVoices
+                .filter((v) => ["masculine", "feminine", "deep_vocal", "natural_vocal"].includes(v.id))
+                .concat(
+                  availableVoices.filter((v) => !["masculine", "feminine", "deep_vocal", "natural_vocal"].includes(v.id))
+                )
+                .slice(0, 4)
+                .map((voice) => {
+                  const isSelected =
+                    selectedVoice === voice.id ||
+                    (selectedVoice === "nova" && voice.id === "feminine") ||
+                    (selectedVoice === "echo" && voice.id === "masculine") ||
+                    (selectedVoice === "onyx" && voice.id === "deep_vocal") ||
+                    (selectedVoice === "shimmer" && voice.id === "natural_vocal");
+                  const isPreviewing = previewingVoiceId === voice.id;
+
+                  return (
+                    <div
+                      key={voice.id}
+                      className={`rounded-xl border p-3 transition-all flex flex-col justify-between ${
+                        isSelected
+                          ? "border-indigo-500 bg-indigo-500/10 shadow-sm ring-1 ring-indigo-500/30"
+                          : "border-zinc-800 bg-zinc-950/70 hover:border-zinc-700"
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">{voice.name}</span>
+                          <span className="text-[10px] uppercase font-bold text-zinc-400 bg-zinc-800/80 px-1.5 py-0.5 rounded border border-zinc-700/50">
+                            {voice.perceived_sound}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[11px] text-zinc-400 leading-relaxed">{voice.description}</p>
                       </div>
-                      <p className="mt-1 text-[11px] text-zinc-400">{voice.description}</p>
-                    </div>
 
-                    <div className="mt-2.5 flex items-center justify-between gap-2 pt-2 border-t border-zinc-800/60">
-                      <button
-                        type="button"
-                        onClick={() => handlePreviewVoice(voice)}
-                        disabled={previewingVoiceId === voice.id}
-                        className="flex items-center gap-1 text-[11px] font-medium text-zinc-300 hover:text-white"
-                      >
-                        <Play className="h-3 w-3 text-indigo-400" />
-                        <span>{previewingVoiceId === voice.id ? "Playing..." : "Preview"}</span>
-                      </button>
+                      <div className="mt-3 flex items-center justify-between gap-2 pt-2 border-t border-zinc-800/60">
+                        <button
+                          type="button"
+                          onClick={() => handlePreviewVoice(voice)}
+                          className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-300 hover:text-white transition-colors"
+                        >
+                          {isPreviewing ? (
+                            <>
+                              <Square className="h-3 w-3 fill-rose-400 text-rose-400" />
+                              <span className="text-rose-300 font-semibold">Stop</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play className="h-3 w-3 text-indigo-400" />
+                              <span>Preview</span>
+                            </>
+                          )}
+                        </button>
 
-                      <button
-                        type="button"
-                        onClick={() => handleSelectVoice(voice.id, voice.perceived_sound)}
-                        className={`rounded px-2 py-0.5 text-[11px] font-semibold transition-colors ${
-                          isSelected
-                            ? "bg-indigo-600 text-white"
-                            : "bg-zinc-800 text-zinc-400 hover:text-white"
-                        }`}
-                      >
-                        {isSelected ? "Selected" : "Select"}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSelectVoice(voice.id, voice.perceived_sound)}
+                          className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-all ${
+                            isSelected
+                              ? "bg-indigo-600 text-white shadow-sm"
+                              : "bg-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-700"
+                          }`}
+                        >
+                          {isSelected ? "Selected" : "Select"}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
             </div>
 
             {/* Review Transcript Toggle */}
@@ -981,8 +1168,141 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
                   <div className="whitespace-pre-wrap">{msg.text}</div>
                 )}
 
+                {/* 0. Proactive Daily Briefing Card */}
+                {msg.response?.daily_briefing && (
+                  <div className="mt-3.5 rounded-xl border border-indigo-500/40 bg-zinc-950/90 p-4 shadow-xl">
+                    {/* Header */}
+                    <div className="flex items-center justify-between border-b border-zinc-800/80 pb-2.5 mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/10 text-amber-400">
+                          <Sparkles className="h-3.5 w-3.5" />
+                        </span>
+                        <div>
+                          <h4 className="text-xs font-semibold text-zinc-100">
+                            Daily Briefing
+                          </h4>
+                          <span className="text-[10px] text-zinc-400 font-mono">
+                            {msg.response.daily_briefing.target_date} • {msg.response.daily_briefing.timezone}
+                          </span>
+                        </div>
+                      </div>
+                      {msg.response.daily_briefing.streak_days > 0 && (
+                        <div className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2.5 py-0.5 border border-amber-500/20 text-[11px] font-semibold text-amber-400">
+                          <Flame className="h-3 w-3 text-amber-500" />
+                          <span>{msg.response.daily_briefing.streak_days}d streak</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Recommended First Focus Banner */}
+                    {msg.response.daily_briefing.recommended_focus && (
+                      <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-3 mb-3">
+                        <div className="flex items-center justify-between gap-2 mb-1.5">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Recommended First Focus
+                          </span>
+                          {msg.response.daily_briefing.recommended_focus.priority && (
+                            <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-mono font-bold text-emerald-300">
+                              {msg.response.daily_briefing.recommended_focus.priority}
+                            </span>
+                          )}
+                        </div>
+                        <h5 className="text-xs font-bold text-white mb-1">
+                          {msg.response.daily_briefing.recommended_focus.title}
+                        </h5>
+                        <p className="text-[11px] text-zinc-300 leading-relaxed mb-2">
+                          {msg.response.daily_briefing.recommended_focus.reason}
+                        </p>
+                        {msg.response.daily_briefing.recommended_focus.scheduled_time && (
+                          <div className="flex items-center gap-1 text-[10px] text-zinc-400 font-mono mb-2">
+                            <Clock className="h-3 w-3 text-indigo-400" />
+                            <span>Scheduled: {msg.response.daily_briefing.recommended_focus.scheduled_time}</span>
+                          </div>
+                        )}
+                        {msg.response.daily_briefing.recommended_focus.deadline && (
+                          <div className="flex items-center gap-1 text-[10px] text-amber-400 font-mono mb-2">
+                            <AlertCircle className="h-3 w-3" />
+                            <span>Due: {msg.response.daily_briefing.recommended_focus.deadline}</span>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleNavigate({ route: "/planner" })}
+                          className="flex items-center gap-1 rounded bg-emerald-600 hover:bg-emerald-500 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors"
+                        >
+                          <span>Focus in Daily Planner</span>
+                          <ArrowRight className="h-3 w-3" />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Summary Metrics Grid */}
+                    <div className="grid grid-cols-3 gap-2 mb-3 text-center">
+                      <div className="rounded-lg bg-zinc-900/80 p-2 border border-zinc-800/80">
+                        <span className="block text-sm font-bold text-indigo-300">
+                          {msg.response.daily_briefing.scheduled_items_count}
+                        </span>
+                        <span className="text-[10px] text-zinc-500">Study Sessions</span>
+                      </div>
+                      <div className="rounded-lg bg-zinc-900/80 p-2 border border-zinc-800/80">
+                        <span className={`block text-sm font-bold ${msg.response.daily_briefing.overdue_count > 0 ? "text-rose-400" : "text-emerald-400"}`}>
+                          {msg.response.daily_briefing.overdue_count}
+                        </span>
+                        <span className="text-[10px] text-zinc-500">Overdue Tasks</span>
+                      </div>
+                      <div className="rounded-lg bg-zinc-900/80 p-2 border border-zinc-800/80">
+                        <span className="block text-sm font-bold text-amber-300">
+                          {msg.response.daily_briefing.upcoming_deadlines_count}
+                        </span>
+                        <span className="text-[10px] text-zinc-500">Deadlines (72h)</span>
+                      </div>
+                    </div>
+
+                    {/* Quick Service Status / Actions */}
+                    <div className="flex items-center justify-between pt-2 border-t border-zinc-800/60 text-[10px] text-zinc-400">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center gap-1 ${msg.response.daily_briefing.calendar_status === "connected" ? "text-emerald-400" : "text-zinc-500"}`}>
+                          <Calendar className="h-3 w-3" />
+                          <span>{msg.response.daily_briefing.calendar_status === "connected" ? "Calendar synced" : "Calendar offline"}</span>
+                        </span>
+                        <span>•</span>
+                        <span className={`inline-flex items-center gap-1 ${msg.response.daily_briefing.gmail_status === "connected" ? "text-emerald-400" : "text-zinc-500"}`}>
+                          <Mail className="h-3 w-3" />
+                          <span>{msg.response.daily_briefing.gmail_status === "connected" ? `${msg.response.daily_briefing.unread_emails_count} unread` : "Gmail offline"}</span>
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleNavigate({ route: "/tasks" })}
+                          className="hover:text-indigo-300 underline transition-colors"
+                        >
+                          Tasks
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigate({ route: "/calendar" })}
+                          className="hover:text-indigo-300 underline transition-colors"
+                        >
+                          Calendar
+                        </button>
+                        <span>•</span>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigate({ route: "/planner" })}
+                          className="hover:text-indigo-300 underline transition-colors"
+                        >
+                          Planner
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* 1. Schedule & Task Card */}
-                {msg.response?.schedule_summary && (
+                {msg.response?.schedule_summary && !msg.response?.daily_briefing && (
                   <div className="mt-3.5 rounded-xl border border-indigo-500/30 bg-zinc-950/80 p-3.5 shadow-inner">
                     <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-2.5">
                       <div className="flex items-center gap-2 text-xs font-semibold text-indigo-400">
@@ -1225,17 +1545,59 @@ export function CopilotDrawer({ isOpen, onClose }: CopilotDrawerProps) {
         </div>
 
         {/* Input Bar */}
-        <div className="border-t border-zinc-800 bg-zinc-950 p-4">
+        <div className="border-t border-zinc-800 bg-zinc-950 p-4 pb-6 sm:pb-4">
+          {/* Active Voice Recording Indicator Banner */}
+          {isRecordingMedia && (
+            <div className="mb-3 flex items-center justify-between rounded-xl border border-rose-500/40 bg-rose-950/40 px-3.5 py-2 text-xs text-rose-300 shadow-lg backdrop-blur-md animate-in fade-in">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-500" />
+                </span>
+                <span className="font-semibold text-rose-200">Recording speech...</span>
+                <span className="font-mono text-[11px] text-rose-300 font-bold">({formatSeconds(recordingSeconds)} / 1:00)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={cancelListening}
+                  className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={stopListening}
+                  className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-rose-500 transition-colors shadow-sm"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                  <span>Done</span>
+                </button>
+              </div>
+            </div>
+          )}
+
           {transcriptNotice && (
-            <div className="mb-2.5 flex items-center justify-between rounded-lg bg-indigo-500/10 border border-indigo-500/20 px-3 py-1.5 text-xs text-indigo-300 animate-in fade-in">
-              <span className="truncate">{transcriptNotice}</span>
-              <button
-                type="button"
-                onClick={() => setTranscriptNotice(null)}
-                className="ml-2 text-zinc-400 hover:text-white"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
+            <div className="mb-2.5 flex items-center justify-between gap-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 px-3 py-2 text-xs text-indigo-300 animate-in fade-in">
+              <span className="truncate flex-1">{transcriptNotice}</span>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleSend(inputText, true);
+                  }}
+                  className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-indigo-500 transition-colors shadow-sm"
+                >
+                  Send Now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTranscriptNotice(null)}
+                  className="text-zinc-400 hover:text-white p-0.5 rounded hover:bg-zinc-800"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
           )}
           <form

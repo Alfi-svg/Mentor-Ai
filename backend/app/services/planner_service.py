@@ -369,18 +369,29 @@ class PlannerService:
         persisted_sched_id: str | None = None
 
         if req.generate_schedule and (persisted_task_ids or created_events):
-            proposal = await SchedulerService.generate_proposal(
-                db=db,
-                user_id=user_id,
-                target_date=req.target_date,
-                task_ids=persisted_task_ids if persisted_task_ids else None,
-            )
-            persisted_sched = await SchedulerService.persist_approved_schedule(
-                db=db,
-                user_id=user_id,
-                proposal=proposal,
-            )
-            persisted_sched_id = str(persisted_sched.id)
+            try:
+                proposal = await SchedulerService.generate_proposal(
+                    db=db,
+                    user_id=user_id,
+                    target_date=req.target_date,
+                    task_ids=persisted_task_ids if persisted_task_ids else None,
+                )
+                if proposal and proposal.validation and proposal.validation.is_valid:
+                    persisted_sched = await SchedulerService.persist_approved_schedule(
+                        db=db,
+                        user_id=user_id,
+                        proposal=proposal,
+                    )
+                    persisted_sched_id = str(persisted_sched.id)
+                else:
+                    logger.warning(
+                        "schedule_proposal_has_conflicts_or_warnings",
+                        errors=proposal.validation.errors if (proposal and proposal.validation) else [],
+                        target_date=req.target_date.isoformat(),
+                    )
+            except Exception as sched_err:
+                logger.error("confirm_plan_schedule_generation_failed", error=str(sched_err))
+                # Do not roll back tasks if schedule generation encounters conflict
 
         # 4. Record audit log
         audit = AuditLog(

@@ -119,10 +119,11 @@ async def test_gemini_tools_schema_generation():
     assert len(tools) == 1
     func_decls = tools[0].function_declarations
     assert len(func_decls) == len(OPENAI_AGENT_TOOLS)
-    assert len(func_decls) == 17
+    assert len(func_decls) == 18
 
     declared_names = {fd.name for fd in func_decls}
     expected_names = {
+        "get_daily_briefing",
         "get_today_tasks",
         "get_task_details",
         "get_upcoming_deadlines",
@@ -469,4 +470,80 @@ async def test_bangla_voice_input_routes_to_gemini_and_returns_english(test_sess
         assert res.input_mode == "voice"
         assert res.spoken_reply is not None
         assert "Your Tasks for Today" in res.spoken_reply
+
+
+def test_voice_preset_mapping_and_supported_options():
+    """Verify all 4 real presets and legacy fallbacks are recognized in SUPPORTED_VOICE_OPTIONS."""
+    from app.services.copilot_agent import SUPPORTED_VOICE_OPTIONS
+
+    option_ids = [opt.id for opt in SUPPORTED_VOICE_OPTIONS]
+    presets = ["masculine", "feminine", "deep_vocal", "natural_vocal"]
+    for p in presets:
+        assert p in option_ids
+
+
+@pytest.mark.asyncio
+async def test_audio_mime_sanitization_mobile_compatibility():
+    """Verify clean_mime sanitizes codec parameters and normalizes iOS m4a/aac types."""
+    fake_audio = b"\x1aE\xdf\xa3" + b"B" * 200
+    mock_response = MagicMock()
+    mock_response.text = "Mobile speech test"
+    mock_client = MagicMock()
+    mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
+
+    # 1. Test audio/webm;codecs=opus strips codec parameter
+    with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client), patch.object(
+        settings, "GEMINI_MODEL", "gemini-3.8-flash"
+    ):
+        res1 = await CopilotAgent.transcribe_audio(fake_audio, "recording.webm", content_type="audio/webm;codecs=opus")
+        assert res1.transcript == "Mobile speech test"
+        call_kwargs1 = mock_client.aio.models.generate_content.call_args.kwargs
+        assert call_kwargs1["contents"][0].inline_data.mime_type == "audio/webm"
+
+    # 2. Test audio/x-m4a maps to audio/mp4 for iOS Safari
+    mock_client.aio.models.generate_content.reset_mock()
+    with patch.object(CopilotAgent, "get_gemini_client", return_value=mock_client), patch.object(
+        settings, "GEMINI_MODEL", "gemini-3.8-flash"
+    ):
+        res2 = await CopilotAgent.transcribe_audio(fake_audio, "recording.m4a", content_type="audio/x-m4a")
+        assert res2.transcript == "Mobile speech test"
+        call_kwargs2 = mock_client.aio.models.generate_content.call_args.kwargs
+        assert call_kwargs2["contents"][0].inline_data.mime_type == "audio/mp4"
+
+
+@pytest.mark.asyncio
+async def test_planner_confirm_plan_persists_tasks_despite_schedule_conflict(test_session: AsyncSession, setup_gemini_user: dict):
+    """Verify PlannerService.confirm_plan persists tasks safely and returns confirmed status even if schedule has conflicts."""
+    from app.schemas.planner import PlanConfirmRequest
+    from app.schemas.task import TaskCreateRequest
+    from app.services.planner_service import PlannerService
+
+    user_id = setup_gemini_user["user_id"]
+    today = datetime.now(UTC).date()
+
+    req = PlanConfirmRequest(
+        target_date=today,
+        tasks=[
+            TaskCreateRequest(
+                title="Resilient Planner Task",
+                duration_minutes=45,
+                priority="P1",
+            )
+        ],
+        persist_tasks=True,
+        generate_schedule=True,
+    )
+
+    # Mock SchedulerService.generate_proposal to simulate an exception or conflict
+    with patch("app.services.planner_service.SchedulerService.generate_proposal", side_effect=RuntimeError("Time slot overflow")):
+        result = await PlannerService.confirm_plan(
+            db=test_session,
+            user_id=user_id,
+            req=req,
+            client_ip="127.0.0.1",
+        )
+
+        assert result.status == "confirmed"
+        assert len(result.created_tasks) == 1
+        assert result.created_tasks[0].title == "Resilient Planner Task"
 

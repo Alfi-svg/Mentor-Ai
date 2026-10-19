@@ -119,6 +119,48 @@ class StudentAccountabilitySummary(BaseModel):
     suggested_recovery_task: dict[str, Any] | None = None
 
 
+class CopilotRecommendedFocus(BaseModel):
+    """Deterministic recommendation for the student's immediate next focus item."""
+
+    task_id: str | None = Field(default=None, description="UUID of recommended task if applicable")
+    title: str = Field(description="Title of recommended task or activity")
+    priority: str | None = Field(default=None, description="Task priority (P1, P2, P3, P4)")
+    reason: str = Field(description="Clear explanation why this item was chosen")
+    action_type: str = Field(
+        default="all_clear",
+        description="Type of recommendation: overdue, scheduled_block, upcoming_deadline, backlog, all_clear",
+    )
+    scheduled_time: str | None = Field(default=None, description="Scheduled time window if applicable")
+    deadline: str | None = Field(default=None, description="Due date and time if applicable")
+
+
+class CopilotDailyBriefing(BaseModel):
+    """Structured daily briefing summarizing tasks, calendar, emails, streak, and recommended focus."""
+
+    target_date: str = Field(description="Date for which the briefing applies (YYYY-MM-DD)")
+    timezone: str = Field(description="User timezone")
+    greeting: str = Field(default="Good day", description="Time-appropriate greeting")
+    recommended_focus: CopilotRecommendedFocus | None = Field(
+        default=None, description="Deterministically prioritized next action"
+    )
+    scheduled_items_count: int = Field(default=0, description="Total schedule blocks for today")
+    calendar_events_count: int = Field(default=0, description="External Google Calendar events today")
+    overdue_count: int = Field(default=0, description="Count of overdue tasks")
+    upcoming_deadlines_count: int = Field(default=0, description="Count of deadlines in next 72 hours")
+    unread_emails_count: int = Field(default=0, description="Count of unread Gmail messages")
+    gmail_status: str = Field(
+        default="disconnected", description="Gmail connection state: connected, disconnected, error"
+    )
+    gmail_account_email: str | None = Field(default=None, description="Connected Gmail address")
+    calendar_status: str = Field(
+        default="disconnected", description="Calendar connection state: connected, disconnected"
+    )
+    calendar_account_email: str | None = Field(default=None, description="Connected Google Calendar address")
+    streak_days: int = Field(default=0, description="Consecutive study streak days")
+    completed_today_count: int = Field(default=0, description="Tasks completed today")
+    summary_text: str = Field(default="", description="High-level narrative summary of the briefing")
+
+
 class CopilotResponse(BaseModel):
     """Complete structured response envelope returned by CopilotService."""
 
@@ -153,6 +195,7 @@ class CopilotResponse(BaseModel):
     )
     navigation: CopilotNavigationTarget | None = None
     accountability: StudentAccountabilitySummary | None = None
+    daily_briefing: CopilotDailyBriefing | None = None
     code_line_count: int | None = None
     verification_status: Literal[
         "verified", "clarification_needed", "unsupported", "error", "unconfigured"

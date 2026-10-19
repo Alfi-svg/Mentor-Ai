@@ -6,13 +6,14 @@ from urllib.parse import quote_plus
 from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppException
 from app.core.security import AuthenticatedUser, get_current_user
 from app.db.models.calendar import CalendarEvent
+from app.db.models.schedule import ScheduleBlock
 from app.db.models.task import Task
 from app.db.session import get_db
 from app.services.calendar.models import (
@@ -221,12 +222,16 @@ async def list_calendar_events(
             "task_id": None,
             "priority": None,
             "task_status": None,
+            "is_deadline": False,
         }
         if e.external_id:
             ext_id_to_event_idx[e.external_id] = idx
         formatted_items.append(item)
 
     if include_tasks:
+        seen_task_ids: set[str] = set()
+
+        # 1. Fetch scheduled tasks with explicit start/end windows
         task_stmt = (
             select(Task)
             .where(
@@ -243,14 +248,17 @@ async def list_calendar_events(
         tasks = list(task_res.scalars().all())
 
         for t in tasks:
+            task_id_str = str(t.id)
+            seen_task_ids.add(task_id_str)
             if t.google_calendar_event_id and t.google_calendar_event_id in ext_id_to_event_idx:
                 # Event already present from Google Calendar sync; enrich with task metadata
                 ev_idx = ext_id_to_event_idx[t.google_calendar_event_id]
                 formatted_items[ev_idx]["source"] = "task"
-                formatted_items[ev_idx]["task_id"] = str(t.id)
+                formatted_items[ev_idx]["task_id"] = task_id_str
                 formatted_items[ev_idx]["priority"] = t.priority
                 formatted_items[ev_idx]["task_status"] = t.status
                 formatted_items[ev_idx]["calendar_sync_status"] = t.calendar_sync_status or "synced"
+                formatted_items[ev_idx]["is_deadline"] = False
             else:
                 # Add scheduled task as a calendar item
                 formatted_items.append(
@@ -265,16 +273,148 @@ async def list_calendar_events(
                         "is_fixed": False,
                         "source": "task",
                         "location": None,
-                        "task_id": str(t.id),
+                        "task_id": task_id_str,
                         "priority": t.priority,
                         "task_status": t.status,
                         "calendar_sync_status": t.calendar_sync_status,
+                        "is_deadline": False,
                     }
                 )
+
+        # 2. Query ScheduleBlocks for allocated blocks within window
+        block_stmt = (
+            select(ScheduleBlock)
+            .where(
+                ScheduleBlock.user_id == current_user.id,
+                ScheduleBlock.start_time < end_dt,
+                ScheduleBlock.end_time > start_dt,
+            )
+            .order_by(ScheduleBlock.start_time.asc())
+        )
+        block_res = await db.execute(block_stmt)
+        blocks = list(block_res.scalars().all())
+        for b in blocks:
+            b_task_id = str(b.task_id) if b.task_id else None
+            # If block corresponds to a task already rendered or calendar event already present, skip
+            if b_task_id and b_task_id in seen_task_ids:
+                continue
+            if b.calendar_event_id:
+                continue
+            if b_task_id:
+                seen_task_ids.add(b_task_id)
+            formatted_items.append(
+                {
+                    "id": f"block_{b.id}",
+                    "external_id": None,
+                    "title": b.title,
+                    "description": None,
+                    "start_time": b.start_time.isoformat(),
+                    "end_time": b.end_time.isoformat(),
+                    "is_all_day": False,
+                    "is_fixed": b.block_type == "fixed_event",
+                    "source": "task" if b_task_id else "schedule_block",
+                    "location": None,
+                    "task_id": b_task_id,
+                    "priority": None,
+                    "task_status": "completed" if b.is_completed else "pending",
+                    "calendar_sync_status": "synced",
+                    "is_deadline": False,
+                }
+            )
+
+        # 3. Include deadline tasks within window that have no explicit scheduled_start
+        deadline_stmt = (
+            select(Task)
+            .where(
+                Task.user_id == current_user.id,
+                Task.is_archived.is_(False),
+                Task.status.in_(["pending", "in_progress"]),
+                Task.scheduled_start.is_(None),
+                Task.deadline.isnot(None),
+                Task.deadline >= start_dt,
+                Task.deadline <= end_dt,
+            )
+            .order_by(Task.deadline.asc())
+        )
+        deadline_res = await db.execute(deadline_stmt)
+        deadline_tasks = list(deadline_res.scalars().all())
+
+        for dt_task in deadline_tasks:
+            dt_id_str = str(dt_task.id)
+            if dt_id_str in seen_task_ids:
+                continue
+            seen_task_ids.add(dt_id_str)
+            dur_mins = dt_task.duration_minutes or 30
+            end_time_val = dt_task.deadline
+            if end_time_val.tzinfo is None:
+                end_time_val = end_time_val.replace(tzinfo=UTC)
+            else:
+                end_time_val = end_time_val.astimezone(UTC)
+            start_time_val = max(start_dt, end_time_val - timedelta(minutes=dur_mins))
+            if end_time_val <= start_time_val:
+                end_time_val = start_time_val + timedelta(minutes=15)
+            formatted_items.append(
+                {
+                    "id": f"deadline_{dt_task.id}",
+                    "external_id": dt_task.google_calendar_event_id,
+                    "title": f"[DUE] {dt_task.title}",
+                    "description": dt_task.description,
+                    "start_time": start_time_val.isoformat(),
+                    "end_time": end_time_val.isoformat(),
+                    "is_all_day": False,
+                    "is_fixed": False,
+                    "source": "task",
+                    "location": None,
+                    "task_id": dt_id_str,
+                    "priority": dt_task.priority,
+                    "task_status": dt_task.status,
+                    "calendar_sync_status": dt_task.calendar_sync_status,
+                    "is_deadline": True,
+                }
+            )
 
     # Sort final combined list by start_time
     formatted_items.sort(key=lambda x: x["start_time"])
     return formatted_items
+
+
+@router.get(
+    "/unscheduled-tasks",
+    summary="List Unscheduled Tasks",
+    description="Retrieves active, unarchived tasks that have not yet been placed on the calendar schedule.",
+)
+async def list_unscheduled_tasks(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Retrieve tasks waiting to be scheduled for display in the calendar backlog drawer."""
+    stmt = (
+        select(Task)
+        .where(
+            Task.user_id == current_user.id,
+            Task.is_archived.is_(False),
+            Task.status.in_(["pending", "in_progress"]),
+            Task.scheduled_start.is_(None),
+        )
+        .order_by(Task.deadline.asc().nullslast(), Task.priority.asc(), Task.created_at.desc())
+        .limit(50)
+    )
+    res = await db.execute(stmt)
+    tasks = list(res.scalars().all())
+    return [
+        {
+            "id": str(t.id),
+            "title": t.title,
+            "description": t.description,
+            "priority": t.priority,
+            "status": t.status,
+            "duration_minutes": t.duration_minutes,
+            "deadline": t.deadline.isoformat() if t.deadline else None,
+            "energy_level": t.energy_level,
+            "tags": t.tags or [],
+        }
+        for t in tasks
+    ]
 
 
 @router.post(

@@ -28,6 +28,8 @@ import {
   X,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/components/ui/ToastProvider";
 import { apiClient, ApiClientError } from "@/lib/api-client";
 import {
   EmailTaskCandidate,
@@ -58,6 +60,8 @@ export default function GmailWorkspacePage() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [connecting, setConnecting] = useState<boolean>(false);
   const [disconnecting, setDisconnecting] = useState<boolean>(false);
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState<boolean>(false);
+  const toast = useToast();
   const [verifying, setVerifying] = useState<boolean>(false);
   const [verifyReport, setVerifyReport] = useState<GmailVerifyResponse | null>(null);
 
@@ -169,13 +173,17 @@ export default function GmailWorkspacePage() {
     }
   };
 
-  const handleDisconnect = async () => {
-    if (!confirm("Are you sure you want to disconnect Gmail?")) return;
+  const handleDisconnect = () => {
+    setDisconnectConfirmOpen(true);
+  };
+
+  const confirmDisconnect = async () => {
     setDisconnecting(true);
     setError(null);
     try {
       await apiClient.disconnectGmail();
       setSuccessMessage("Gmail account disconnected.");
+      toast.success("Gmail Disconnected", "Your Google Mail account has been disconnected.");
       setStatus((prev) =>
         prev
           ? {
@@ -190,8 +198,11 @@ export default function GmailWorkspacePage() {
       setSelectedMessageId(null);
       setSelectedDetail(null);
       setVerifyReport(null);
+      setDisconnectConfirmOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to disconnect Gmail.");
+      const msg = err instanceof Error ? err.message : "Failed to disconnect Gmail.";
+      setError(msg);
+      toast.error("Disconnection Failed", msg);
     } finally {
       setDisconnecting(false);
     }
@@ -1336,6 +1347,19 @@ export default function GmailWorkspacePage() {
             </div>
           </div>
         )}
+
+        {/* Disconnect Confirmation Dialog */}
+        <ConfirmDialog
+          isOpen={disconnectConfirmOpen}
+          title="Disconnect Gmail Account"
+          description="Are you sure you want to disconnect your Google Mail account? Your stored credentials will be securely revoked, and Mentor AI will no longer be able to read or draft emails."
+          confirmText="Disconnect Account"
+          cancelText="Keep Connected"
+          variant="danger"
+          isLoading={disconnecting}
+          onConfirm={confirmDisconnect}
+          onCancel={() => setDisconnectConfirmOpen(false)}
+        />
       </div>
     </AppShell>
   );

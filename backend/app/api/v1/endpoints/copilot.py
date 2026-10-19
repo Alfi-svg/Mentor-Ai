@@ -40,7 +40,7 @@ from app.services.copilot.tools import get_today_schedule, resolve_user_timezone
 from app.services.copilot_agent import CopilotAgent
 
 ALLOWED_AUDIO_EXTENSIONS = {
-    ".webm", ".wav", ".mp3", ".m4a", ".ogg", ".oga", ".flac", ".mp4", ".mpeg", ".mpga"
+    ".webm", ".wav", ".mp3", ".m4a", ".ogg", ".oga", ".flac", ".mp4", ".mpeg", ".mpga", ".aac"
 }
 ALLOWED_AUDIO_MIME_PREFIXES = ("audio/", "video/", "application/octet-stream")
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
@@ -132,7 +132,7 @@ async def confirm_copilot_action(
     "/transcribe",
     response_model=CopilotTranscribeResponse,
     status_code=status.HTTP_200_OK,
-    summary="Transcribe audio recording via OpenAI Whisper speech-to-text",
+    summary="Transcribe audio recording via Gemini multimodal speech-to-text",
 )
 async def transcribe_audio_endpoint(
     file: Annotated[UploadFile, File(...)],
