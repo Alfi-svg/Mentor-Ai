@@ -30,7 +30,13 @@ export default function LandingPage() {
             <MentorLogo size="md" subtitle="Autonomous Task & Schedule Intelligence" />
           </Link>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            <Link
+              href="/team"
+              className="text-xs font-semibold text-zinc-400 hover:text-indigo-300 transition-colors"
+            >
+              Developer Team
+            </Link>
             <HealthStatusBadge />
             {isAuthenticated ? (
               <Link

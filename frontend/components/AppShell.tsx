@@ -28,6 +28,7 @@ import { MentorLogo } from "./MentorLogo";
 
 interface AppShellProps {
   children: React.ReactNode;
+  requireAuth?: boolean;
 }
 
 interface NavGroup {
@@ -40,7 +41,7 @@ interface NavGroup {
   }[];
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, requireAuth = true }: AppShellProps) {
   const { user, isAuthenticated, isLoading, logout, sessionExpired, clearSessionExpired } =
     useAuth();
   const pathname = usePathname();
@@ -49,10 +50,10 @@ export function AppShell({ children }: AppShellProps) {
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
+    if (requireAuth && !isLoading && !isAuthenticated) {
       router.push("/login");
     }
-  }, [isLoading, isAuthenticated, router]);
+  }, [requireAuth, isLoading, isAuthenticated, router]);
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -78,6 +79,68 @@ export function AppShell({ children }: AppShellProps) {
           <MentorLogo size="lg" showWordmark={true} subtitle="Loading Workspace..." />
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent mt-2" />
         </div>
+      </div>
+    );
+  }
+
+  // If public viewing is allowed and user is not authenticated
+  if (!isAuthenticated && !requireAuth) {
+    return (
+      <div className="flex min-h-screen flex-col bg-zinc-950 text-zinc-100 antialiased selection:bg-indigo-500 selection:text-white">
+        {/* Public Navigation Header */}
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-zinc-800/80 bg-zinc-950/80 px-4 sm:px-8 backdrop-blur-xl">
+          <div className="flex items-center gap-6">
+            <Link href="/" className="transition-opacity hover:opacity-90">
+              <MentorLogo size="md" subtitle="Autonomous Task & Schedule Intelligence" />
+            </Link>
+            <nav className="hidden sm:flex items-center gap-4 text-xs font-medium">
+              <Link
+                href="/"
+                className="text-zinc-400 hover:text-white transition-colors"
+              >
+                Home
+              </Link>
+              <Link
+                href="/team"
+                className="text-indigo-400 font-semibold transition-colors"
+              >
+                Developer Team
+              </Link>
+            </nav>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <HealthStatusBadge />
+            <Link
+              href="/login"
+              className="rounded-xl px-3.5 py-1.5 text-xs font-medium text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors"
+            >
+              Log In
+            </Link>
+            <Link
+              href="/signup"
+              className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-4 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 transition-all border border-indigo-400/30"
+            >
+              <span>Sign Up</span>
+            </Link>
+          </div>
+        </header>
+
+        {/* Page Content Body */}
+        <main className="flex flex-1 flex-col overflow-y-auto">
+          <div className="flex-1 p-4 sm:p-6 lg:p-8 pb-safe">{children}</div>
+          <footer className="border-t border-zinc-800/60 bg-zinc-950/70 px-6 py-4 text-center text-xs text-zinc-500 backdrop-blur-sm">
+            <p>
+              Built with care by{" "}
+              <Link
+                href="/team"
+                className="font-medium text-indigo-400 hover:text-indigo-300 transition-colors underline-offset-4 hover:underline"
+              >
+                Code ArenaX
+              </Link>
+            </p>
+          </footer>
+        </main>
       </div>
     );
   }

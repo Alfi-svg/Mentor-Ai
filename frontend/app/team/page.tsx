@@ -136,7 +136,7 @@ export default function TeamPage() {
   const [logoError, setLogoError] = useState(false);
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <div className="mx-auto max-w-6xl space-y-10">
         {/* Top Hero Section */}
         <section className="relative overflow-hidden rounded-3xl border border-zinc-800/80 bg-gradient-to-b from-indigo-950/20 via-zinc-900/40 to-zinc-950/80 p-6 sm:p-10 backdrop-blur-xl">
